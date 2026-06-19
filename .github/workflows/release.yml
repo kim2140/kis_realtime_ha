@@ -1,1 +1,43 @@
+name: Release
 
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Get version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Update manifest version
+        run: |
+          sed -i 's/"version": ".*"/"version": "${{ steps.version.outputs.VERSION }}"/' \
+            custom_components/kis_realtime/manifest.json
+
+      - name: Create zip
+        run: |
+          zip -r kis_realtime.zip custom_components/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "v${{ steps.version.outputs.VERSION }}"
+          body: |
+            ## KIS 실시간 주식 시세 v${{ steps.version.outputs.VERSION }}
+
+            ### 설치 방법
+            1. `kis_realtime.zip` 다운로드
+            2. 압축 해제 후 `custom_components/kis_realtime` 폴더를
+               `/homeassistant/custom_components/` 에 복사
+            3. Home Assistant 재시작
+          files: kis_realtime.zip
+          draft: false
+          prerelease: false
