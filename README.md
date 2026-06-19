@@ -32,7 +32,25 @@
 
 ### 1. KIS Developers에서 App Key 발급
 
-[KIS Developers](https://apiportal.koreainvestment.com) 접속 → 앱 등록 → App Key / App Secret 발급
+#### 1-1. 한국투자증권 계좌 준비
+- 한국투자증권 계좌가 없다면 먼저 계좌 개설 필요
+- HTS ID (공동인증서 로그인용 ID) 확인
+
+#### 1-2. 오픈API 서비스 신청
+1. [한국투자증권 홈페이지](https://www.truefriend.com) 로그인
+2. **뱅킹/서비스 → 오픈API** 메뉴 접속
+3. **오픈API 서비스 신청하기** 클릭
+4. 계좌번호 선택 후 신청 완료
+5. 카카오톡 알림톡으로 **KIS Developers 임시 비밀번호** 수신
+
+#### 1-3. App Key / App Secret 발급
+1. [KIS Developers](https://apiportal.koreainvestment.com) 접속
+2. HTS ID + 임시 비밀번호로 로그인
+3. 우측 상단 **마이페이지** 또는 **API신청** 클릭
+4. **신청정보** 탭에서 **App Key / App Secret 복사**
+
+> ⚠️ App Key와 App Secret은 외부에 노출되지 않도록 주의하세요.  
+> 이용기간은 신청일로부터 **1년**이며, 만료 1개월 전 문자 안내가 옵니다.
 
 ### 2. HA 통합구성요소 추가
 
