@@ -1,0 +1,70 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "KIS 한국투자증권 API 설정",
+        "description": "KIS Developers ({url}) 에서 발급받은 App Key와 App Secret을 입력하세요.",
+        "data": {
+          "app_key":    "App Key",
+          "app_secret": "App Secret",
+          "url_base":   "API URL (기본값 권장)"
+        }
+      },
+      "interval": {
+        "title": "업데이트 간격 설정",
+        "description": "종목 업데이트: {throttle_min}~{throttle_max}초 / 지수 polling: {poll_min}~{poll_max}초",
+        "data": {
+          "throttle_sec":  "종목 업데이트 간격 (초, WebSocket 기준)",
+          "index_poll_sec": "지수 polling 간격 (초, 코스피/코스닥 REST 조회)"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "App Key 또는 App Secret이 올바르지 않습니다."
+    },
+    "abort": {
+      "already_configured": "이미 설정되어 있습니다."
+    }
+  },
+  "options": {
+    "step": {
+      "menu": {
+        "title": "종목/지수 관리",
+        "description": "현재 종목: {stocks}\n현재 지수: {indexes}",
+        "data": { "action": "작업 선택" }
+      },
+      "interval": {
+        "title": "업데이트 간격 조정",
+        "description": "종목: {throttle_min}~{throttle_max}초 / 지수: {poll_min}~{poll_max}초",
+        "data": {
+          "throttle_sec":   "종목 업데이트 간격 (초)",
+          "index_poll_sec": "지수 polling 간격 (초)"
+        }
+      },
+      "add_stock": {
+        "title": "종목 추가",
+        "description": "종목코드 6자리와 HA entity 이름을 입력하세요.\n예) 코드: 069500 / entity: kodex_200 → sensor.kis_kodex_200",
+        "data": {
+          "code":   "종목코드 (예: 069500)",
+          "entity": "Entity 이름 (영문/숫자/언더스코어)"
+        }
+      },
+      "add_index": {
+        "title": "지수 추가",
+        "description": "코스피 또는 코스닥을 선택하세요.",
+        "data": {
+          "code":   "지수 선택",
+          "entity": "Entity 이름 (예: kospi, kosdaq)"
+        }
+      },
+      "remove": {
+        "title": "종목/지수 삭제",
+        "description": "삭제할 항목을 선택하세요.",
+        "data": { "items": "삭제할 항목" }
+      }
+    },
+    "error": {
+      "already_exists": "이미 등록된 종목/지수입니다."
+    }
+  }
+}
