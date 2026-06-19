@@ -18,7 +18,7 @@
 ### HACS (권장)
 
 1. HACS → 통합구성요소 → 우측 상단 메뉴 → **사용자 정의 저장소**
-2. URL: `https://github.com/YOUR_GITHUB_ID/kis_realtime_ha` / 범주: Integration
+2. URL: `https://github.com/kim2140/kis_realtime_ha` / 범주: Integration
 3. **KIS 실시간 주식 시세** 검색 후 설치
 4. Home Assistant 재시작
 
