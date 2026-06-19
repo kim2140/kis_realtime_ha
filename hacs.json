@@ -1,0 +1,10 @@
+{
+  "name": "KIS 실시간 주식 시세",
+  "domains": ["sensor"],
+  "documentation": "https://github.com/YOUR_GITHUB_ID/kis_realtime_ha",
+  "iot_class": "cloud_push",
+  "homeassistant": "2023.1.0",
+  "content_in_root": false,
+  "zip_release": false,
+  "filename": "kis_realtime.zip"
+}
