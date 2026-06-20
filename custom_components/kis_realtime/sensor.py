@@ -1,19 +1,20 @@
-# v1.7.0
+# v1.0.0
 # KIS 실시간 주식 시세 Sensor Entity
 # ─────────────────────────────────────────────────────────────────────────────
 # [개요]
 # KisRealtimeCoordinator에서 수신한 데이터를 HA sensor로 노출하는 파일.
-# - 종목: sensor.kis_{entity} (단위: KRW)
-# - 지수: sensor.kis_{entity} (단위: pt)
-# - attribute: 현재가, 등락률, 시/고/저, 거래량, PER, PBR, 외국인비율 등
+# - 종목: sensor.kis_{종목코드} (단위: KRW)  예) sensor.kis_005930
+# - 지수: sensor.kis_{entity}  (단위: pt)    예) sensor.kis_kospi
 #
-# [v1.7.0 수정사항]
-# ★ 핵심 버그 수정: entry.data 대신 entry.options 우선 병합으로 종목/지수 읽기
-#   - options_flow에서 저장한 종목은 entry.options에 있음
-#   - 기존 코드는 entry.data만 참조해서 종목 추가 후 sensor가 생성되지 않는 문제
-# ★ sensor 이름에 friendly_name 반영 (한글 이름 표시)
-#   - 기존: "[KIS] stock_069500 (069500)" 형태
-#   - 수정: "[KIS] KODEX 200" 형태 (friendly_name 우선)
+# [v1.7.0] options 우선 병합으로 종목/지수 읽기 버그 수정
+# [v1.7.3] unique_id 제거, has_entity_name=False로 entity_id 고정
+# [v1.7.4] unique_id 복구 + entity_id 고정 동시 해결
+#   ★ 문제: v1.7.3에서 unique_id 제거 시 HA UI에서 entity 설정 불가 경고 발생
+#   ★ 해결: unique_id는 유지하되, suggested_object_id로 entity_id를 종목코드로 고정
+#     - unique_id = "kis_{code}" → HA가 entity 추적 가능 (UI 설정 정상)
+#     - suggested_object_id = "kis_{code}" → registry 최초 등록 시 entity_id 고정
+#     - self.entity_id 직접 지정 → 이미 등록된 entity도 강제 고정
+#     - _attr_has_entity_name = False → friendly_name 기반 변환 차단
 # ─────────────────────────────────────────────────────────────────────────────
 
 from __future__ import annotations
@@ -37,37 +38,31 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Config Entry에서 sensor 엔티티 생성.
-
-    v1.7.0 수정: entry.options를 우선 읽도록 변경.
-    종목/지수는 options_flow에서 저장되므로 entry.options에 존재하며,
-    entry.data는 초기 빈 리스트([])를 가지고 있어 sensor가 생성되지 않던 문제 수정.
+    v1.7.0: entry.options 우선 병합 (종목은 options_flow에서 options에 저장됨)
     """
     coordinator: KisRealtimeCoordinator = hass.data[DOMAIN][entry.entry_id]
 
-    # ★ v1.7.0: options 우선, 없으면 data에서 읽음 (기존: entry.data만 참조)
     cfg = {**entry.data, **entry.options}
 
     entities = []
 
-    # 종목 sensor 생성
     for stock in cfg.get(CONF_STOCKS, []):
         entities.append(
             KisStockSensor(
                 coordinator,
                 stock["code"],
                 stock["entity"],
-                stock.get("friendly_name", ""),  # v1.7.0: friendly_name 전달
+                stock.get("friendly_name", ""),
             )
         )
 
-    # 지수 sensor 생성
     for index in cfg.get(CONF_INDEXES, []):
         entities.append(
             KisIndexSensor(
                 coordinator,
                 index["code"],
                 index["entity"],
-                index.get("friendly_name", ""),  # v1.7.0: friendly_name 전달
+                index.get("friendly_name", ""),
             )
         )
 
@@ -82,35 +77,40 @@ async def async_setup_entry(
 class KisStockSensor(SensorEntity):
     """KIS 종목 실시간 시세 Sensor (ETF / 개별주)"""
 
-    _attr_state_class                 = SensorStateClass.MEASUREMENT
-    _attr_native_unit_of_measurement  = "KRW"
-    _attr_icon                        = "mdi:chart-line"
-    _attr_should_poll                 = False
+    _attr_state_class                = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = "KRW"
+    _attr_icon                       = "mdi:chart-line"
+    _attr_should_poll                = False
+    # friendly_name 기반 entity_id 자동 변환 차단
+    _attr_has_entity_name            = False
 
     def __init__(
         self,
         coordinator: KisRealtimeCoordinator,
         code: str,
         entity_name: str,
-        friendly_name: str = "",   # v1.7.0: 한글 이름 파라미터 추가
+        friendly_name: str = "",
     ):
-        self._coordinator  = coordinator
-        self._code         = code
-        self._entity_name  = entity_name
-        self._data: dict   = {}
+        self._coordinator = coordinator
+        self._code        = code
+        self._entity_name = entity_name
+        self._data: dict  = {}
 
-        self._attr_unique_id = f"kis_{entity_name}"
+        # unique_id 유지 → HA UI에서 entity 설정 가능
+        self._attr_unique_id = f"kis_{code}"
 
-        # v1.7.0: friendly_name 있으면 한글 이름 우선, 없으면 기존 형식
-        if friendly_name:
-            self._attr_name = f"[KIS] {friendly_name}"
-        else:
-            self._attr_name = f"[KIS] {entity_name} ({code})"
+        # suggested_object_id → registry 최초 등록 시 entity_id를 kis_{code}로 고정
+        self._attr_suggested_object_id = f"kis_{code}"
+
+        # entity_id 직접 지정 → 이미 등록된 entity도 강제 고정
+        self.entity_id = f"sensor.kis_{code}"
+
+        # 표시 이름: friendly_name 우선, 없으면 종목코드
+        self._attr_name = friendly_name if friendly_name else f"[KIS] {code}"
 
     async def async_added_to_hass(self):
         """HA에 등록될 때 coordinator 콜백 연결"""
         self._coordinator.register_callback(self._entity_name, self._on_data)
-        # 캐시된 데이터 있으면 즉시 반영
         if self._entity_name in self._coordinator.data:
             self._data = self._coordinator.data[self._entity_name]
 
@@ -169,30 +169,36 @@ class KisStockSensor(SensorEntity):
 class KisIndexSensor(SensorEntity):
     """KIS 지수 Sensor (코스피 / 코스닥)"""
 
-    _attr_state_class                 = SensorStateClass.MEASUREMENT
-    _attr_native_unit_of_measurement  = "pt"
-    _attr_icon                        = "mdi:chart-areaspline"
-    _attr_should_poll                 = False
+    _attr_state_class                = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = "pt"
+    _attr_icon                       = "mdi:chart-areaspline"
+    _attr_should_poll                = False
+    # friendly_name 기반 entity_id 자동 변환 차단
+    _attr_has_entity_name            = False
 
     def __init__(
         self,
         coordinator: KisRealtimeCoordinator,
         code: str,
         entity_name: str,
-        friendly_name: str = "",   # v1.7.0: 한글 이름 파라미터 추가
+        friendly_name: str = "",
     ):
-        self._coordinator  = coordinator
-        self._code         = code
-        self._entity_name  = entity_name
-        self._data: dict   = {}
+        self._coordinator = coordinator
+        self._code        = code
+        self._entity_name = entity_name
+        self._data: dict  = {}
 
+        # unique_id 유지 → HA UI에서 entity 설정 가능
         self._attr_unique_id = f"kis_{entity_name}"
 
-        # v1.7.0: friendly_name 있으면 한글 이름 우선, 없으면 기존 형식
-        if friendly_name:
-            self._attr_name = f"[KIS] {friendly_name}"
-        else:
-            self._attr_name = f"[KIS] {entity_name} ({code})"
+        # suggested_object_id → registry 최초 등록 시 entity_id 고정
+        self._attr_suggested_object_id = f"kis_{entity_name}"
+
+        # entity_id 직접 지정 → sensor.kis_kospi / sensor.kis_kosdaq
+        self.entity_id = f"sensor.kis_{entity_name}"
+
+        # 표시 이름: friendly_name 우선
+        self._attr_name = friendly_name if friendly_name else f"[KIS] {entity_name}"
 
     async def async_added_to_hass(self):
         """HA에 등록될 때 coordinator 콜백 연결"""

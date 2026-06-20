@@ -1,4 +1,4 @@
-# v1.6.0
+# v1.0.0
 # KIS 실시간 시세 Coordinator
 # - WebSocket (H0STCNT0): 장중 실시간 체결가
 # - REST (FHKST01010100): 장외 종가 조회

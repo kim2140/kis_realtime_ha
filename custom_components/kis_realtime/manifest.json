@@ -1,14 +1,14 @@
 {
   "domain": "kis_realtime",
   "name": "KIS 실시간 주식 시세",
-  "version": "1.6.0",
-  "documentation": "https://github.com/your-repo/kis_realtime",
+  "version": "1.0.0",
+  "documentation": "https://github.com/kim2140/kis_realtime_ha",
   "requirements": [
     "websockets>=12.0",
     "aiohttp>=3.8.0"
   ],
   "dependencies": [],
-  "codeowners": [],
+  "codeowners": ["@kim2140"],
   "iot_class": "cloud_push",
   "config_flow": true
 }

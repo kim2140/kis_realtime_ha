@@ -1,8 +1,18 @@
-# v1.6.0
+# v1.0.0
 # KIS 실시간 주식 시세 Config Flow
-# v1.4.0: selector 사용으로 UI 개선, 종목명 자동 조회, 삭제 버그 수정
+# ─────────────────────────────────────────────────────────────────────────────
+# [개요]
+# HA UI에서 App Key/Secret 입력, 종목/지수 추가·삭제, 업데이트 간격 설정을 처리.
+# options_flow에서 저장된 종목/지수는 entry.options에 기록됨.
+#
+# [v1.4.0] selector 사용으로 UI 개선, 종목명 자동 조회, 삭제 버그 수정
+# [v1.7.1] entity 이름 단순화: 종목명 영문변환 → 종목코드 그대로 사용
+#   - 기존: sensor.kis_tiger_riceubudongsaninpeura (종목명 영문 변환, 너무 길고 불명확)
+#   - 변경: sensor.kis_329200 (종목코드 6자리, 단순하고 명확)
+#   - _to_entity() 함수 제거 (더 이상 사용 안 함)
+#   - 지수는 기존 유지: sensor.kis_kospi / sensor.kis_kosdaq
+# ─────────────────────────────────────────────────────────────────────────────
 
-import re
 import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.core import callback
@@ -21,14 +31,8 @@ from .const import (
 )
 
 
-def _to_entity(code: str, name: str) -> str:
-    """종목명 → entity 이름 변환"""
-    entity = re.sub(r'[^a-zA-Z0-9]', '_', name.lower())
-    entity = re.sub(r'_+', '_', entity).strip('_')
-    return entity or f"stock_{code}"
-
-
 async def _validate_kis_key(app_key: str, app_secret: str, url_base: str) -> bool:
+    """App Key / Secret 유효성 검증 (WebSocket approval_key 발급 시도)"""
     url = f"{url_base}/oauth2/Approval"
     payload = {"grant_type": "client_credentials", "appkey": app_key, "secretkey": app_secret}
     try:
@@ -40,6 +44,7 @@ async def _validate_kis_key(app_key: str, app_secret: str, url_base: str) -> boo
 
 
 async def _get_token(app_key: str, app_secret: str, url_base: str) -> str:
+    """REST API 접근용 Bearer 토큰 발급"""
     url = f"{url_base}/oauth2/tokenP"
     payload = {"grant_type": "client_credentials", "appkey": app_key, "appsecret": app_secret}
     try:
@@ -52,11 +57,14 @@ async def _get_token(app_key: str, app_secret: str, url_base: str) -> str:
 
 async def _fetch_stock_info(app_key: str, app_secret: str, url_base: str, code: str) -> tuple[str, str]:
     """종목코드 → (entity 이름, 한글 종목명) 반환
-    entity: 자동 생성 (stock_{code})
-    friendly_name: 한글 종목명 (기본값으로 제안)
+
+    v1.7.1 변경:
+    - entity: 종목코드 그대로 사용 (예: "329200" → sensor.kis_329200)
+    - 기존 stock_{code} 방식 제거
+    - friendly_name: 한글 종목명 (KIS API 조회, 실패 시 빈 문자열)
     """
     token = await _get_token(app_key, app_secret, url_base)
-    entity = f"stock_{code}"
+    entity = code          # ★ v1.7.1: 종목코드를 entity 이름으로 직접 사용
     friendly = ""
     if not token:
         return entity, friendly
@@ -74,7 +82,7 @@ async def _fetch_stock_info(app_key: str, app_secret: str, url_base: str, code: 
                 out = (await resp.json()).get("output", {})
                 kor_name = out.get("hts_kor_isnm", "")
                 if kor_name:
-                    friendly = kor_name  # 한글 종목명
+                    friendly = kor_name
     except Exception:
         pass
     return entity, friendly
@@ -87,6 +95,7 @@ class KisRealtimeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._data = {}
 
     async def async_step_user(self, user_input=None):
+        """초기 설정: App Key / Secret 입력"""
         errors = {}
         if user_input is not None:
             valid = await _validate_kis_key(
@@ -110,6 +119,7 @@ class KisRealtimeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
 
     async def async_step_interval(self, user_input=None):
+        """업데이트 간격 설정"""
         if user_input is not None:
             self._data.update(user_input)
             return self.async_create_entry(
@@ -149,6 +159,7 @@ class KisRealtimeOptionsFlow(config_entries.OptionsFlow):
         self._pending_friendly = ""
 
     def _save(self):
+        """현재 상태를 options에 저장"""
         return self.async_create_entry(title="", data={
             **self._entry.data,
             CONF_STOCKS:       self._stocks,
@@ -161,6 +172,7 @@ class KisRealtimeOptionsFlow(config_entries.OptionsFlow):
         return await self.async_step_menu()
 
     async def async_step_menu(self, user_input=None):
+        """메인 메뉴: 종목/지수 추가·삭제·간격 조정·저장"""
         if user_input is not None:
             action = user_input.get("action")
             if action == "add_stock":  return await self.async_step_add_stock_code()
@@ -169,8 +181,9 @@ class KisRealtimeOptionsFlow(config_entries.OptionsFlow):
             if action == "interval":   return await self.async_step_interval()
             return self._save()
 
-        stock_list = ", ".join(f"{s['code']}({s['entity']})" for s in self._stocks)  or "없음"
-        index_list = ", ".join(f"{i['code']}({i['entity']})" for i in self._indexes) or "없음"
+        # 현재 등록 목록 표시 (sensor ID 형태로)
+        stock_list = ", ".join(f"sensor.kis_{s['entity']}" for s in self._stocks) or "없음"
+        index_list = ", ".join(f"sensor.kis_{i['entity']}" for i in self._indexes) or "없음"
 
         return self.async_show_form(
             step_id="menu",
@@ -189,6 +202,7 @@ class KisRealtimeOptionsFlow(config_entries.OptionsFlow):
         )
 
     async def async_step_add_stock_code(self, user_input=None):
+        """종목 추가 1단계: 종목코드 입력"""
         errors = {}
         if user_input is not None:
             code = str(user_input["code"]).zfill(6)
@@ -212,12 +226,14 @@ class KisRealtimeOptionsFlow(config_entries.OptionsFlow):
         )
 
     async def async_step_add_stock_confirm(self, user_input=None):
-        """entity 자동 생성, friendly_name만 사용자 입력"""
+        """종목 추가 2단계: 표시 이름(friendly_name) 확인·수정
+        entity는 종목코드로 자동 확정 (수정 불가)
+        """
         if user_input is not None:
             friendly = user_input.get("friendly_name", "").strip() or f"[KIS] {self._pending_code}"
             self._stocks.append({
                 "code":          self._pending_code,
-                "entity":        self._pending_entity,
+                "entity":        self._pending_entity,   # 종목코드 (예: "329200")
                 "friendly_name": friendly,
             })
             return await self.async_step_menu()
@@ -230,12 +246,12 @@ class KisRealtimeOptionsFlow(config_entries.OptionsFlow):
             description_placeholders={
                 "code":   self._pending_code,
                 "entity": self._pending_entity,
-                "sensor": f"sensor.kis_{self._pending_entity}",
+                "sensor": f"sensor.kis_{self._pending_entity}",  # 예: sensor.kis_329200
             },
         )
 
     async def async_step_add_index(self, user_input=None):
-        """지수 추가 - 1단계: 지수 선택"""
+        """지수 추가 1단계: 코스피/코스닥 선택"""
         if user_input is not None:
             code = str(user_input["code"]).zfill(4)
             if any(i["code"] == code for i in self._indexes):
@@ -252,6 +268,7 @@ class KisRealtimeOptionsFlow(config_entries.OptionsFlow):
                     errors={"code": "already_exists"},
                 )
             self._pending_code = code
+            # 지수는 코드번호보다 이름이 직관적이므로 기존 유지
             INDEX_MAP = {"0001": ("kospi", "코스피"), "1001": ("kosdaq", "코스닥")}
             self._pending_entity, self._pending_friendly = INDEX_MAP.get(code, (f"index_{code}", code))
             return await self.async_step_add_index_confirm()
@@ -269,7 +286,7 @@ class KisRealtimeOptionsFlow(config_entries.OptionsFlow):
         )
 
     async def async_step_add_index_confirm(self, user_input=None):
-        """지수 추가 - 2단계: friendly_name 입력"""
+        """지수 추가 2단계: 표시 이름 확인·수정"""
         if user_input is not None:
             friendly = user_input.get("friendly_name", "").strip() or self._pending_friendly
             self._indexes.append({
@@ -291,6 +308,7 @@ class KisRealtimeOptionsFlow(config_entries.OptionsFlow):
         )
 
     async def async_step_interval(self, user_input=None):
+        """업데이트 간격 조정"""
         if user_input is not None:
             self._throttle = user_input[CONF_THROTTLE_SEC]
             self._poll     = user_input[CONF_INDEX_POLL]
@@ -309,9 +327,10 @@ class KisRealtimeOptionsFlow(config_entries.OptionsFlow):
         )
 
     async def async_step_remove(self, user_input=None):
+        """종목/지수 삭제: 체크박스로 복수 선택 후 즉시 저장"""
         all_items = (
-            [{"value": f"stock:{s['code']}:{s['entity']}", "label": f"{s.get('friendly_name', s['entity'])} ({s['code']})"} for s in self._stocks] +
-            [{"value": f"index:{i['code']}:{i['entity']}", "label": f"{i.get('friendly_name', i['entity'])} ({i['code']})"} for i in self._indexes]
+            [{"value": f"stock:{s['code']}:{s['entity']}", "label": f"{s.get('friendly_name', s['entity'])} (sensor.kis_{s['entity']})"} for s in self._stocks] +
+            [{"value": f"index:{i['code']}:{i['entity']}", "label": f"{i.get('friendly_name', i['entity'])} (sensor.kis_{i['entity']})"} for i in self._indexes]
         )
         if not all_items:
             return await self.async_step_menu()
@@ -320,7 +339,7 @@ class KisRealtimeOptionsFlow(config_entries.OptionsFlow):
             to_remove = user_input.get("items", [])
             self._stocks  = [s for s in self._stocks  if f"stock:{s['code']}:{s['entity']}" not in to_remove]
             self._indexes = [i for i in self._indexes if f"index:{i['code']}:{i['entity']}" not in to_remove]
-            # 삭제 즉시 저장 → sensor 완전 제거
+            # 삭제 즉시 저장 → __init__.py의 _async_update_listener가 entity registry 정리
             return self._save()
 
         return self.async_show_form(

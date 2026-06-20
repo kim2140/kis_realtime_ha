@@ -1,4 +1,4 @@
-# v1.6.0
+# v1.0.0
 # KIS 실시간 주식 시세 Custom Integration
 # - HA UI에서 App Key/Secret 입력 (config_flow)
 # - 종목/지수 UI에서 추가/삭제 (options_flow)
