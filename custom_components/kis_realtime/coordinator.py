@@ -1,4 +1,4 @@
-# v1.2.0
+# v1.6.0
 # KIS 실시간 시세 Coordinator
 # - WebSocket (H0STCNT0): 장중 실시간 체결가
 # - REST (FHKST01010100): 장외 종가 조회
@@ -108,10 +108,16 @@ class KisRealtimeCoordinator:
     # ── 콜백 등록/해제 ──────────────────────────
     def register_callback(self, entity_name: str, callback):
         self._callbacks.setdefault(entity_name, []).append(callback)
+        # 이미 캐시된 데이터가 있으면 즉시 콜백 호출
+        if entity_name in self.data:
+            callback(self.data[entity_name])
 
     def unregister_callback(self, entity_name: str, callback):
         if entity_name in self._callbacks:
-            self._callbacks[entity_name].remove(callback)
+            try:
+                self._callbacks[entity_name].remove(callback)
+            except ValueError:
+                pass
 
     def _notify(self, entity_name: str, data: dict):
         self.data[entity_name] = data
@@ -152,7 +158,8 @@ class KisRealtimeCoordinator:
     # ── KIS Access Token 발급 ───────────────────
     async def _get_access_token(self) -> str:
         """KIS OAuth2 access token 발급 (24시간 유효, 자동 갱신)
-        App Key/Secret으로 직접 발급 → 외부 파일 불필요
+        - 1분에 1회 발급 제한 → 기존 token 유지 후 60초 후 재시도
+        - App Key/Secret으로 직접 발급 → 외부 파일 불필요
         """
         now = datetime.now()
         # 만료 10분 전에 갱신
@@ -165,21 +172,33 @@ class KisRealtimeCoordinator:
             "appkey":     self._app_key,
             "appsecret":  self._app_secret,
         }
-        try:
-            async with self._session.post(url, json=payload, ssl=False) as resp:
-                data = await resp.json()
-                token = data.get("access_token", "")
-                if not token:
-                    log.error(f"access token 발급 실패: {data}")
-                    return self._access_token  # 기존 토큰 유지
-                expires_in = int(data.get("expires_in", 86400))
-                self._access_token  = token
-                self._token_expires = now + timedelta(seconds=expires_in)
-                log.info(f"KIS access token 발급 완료 (만료: {self._token_expires.strftime('%H:%M')})")
-                return token
-        except Exception as e:
-            log.error(f"access token 발급 오류: {e}")
-            return self._access_token
+        # 최대 3회 재시도 (1분 간격)
+        for attempt in range(3):
+            try:
+                async with self._session.post(url, json=payload, ssl=False) as resp:
+                    data = await resp.json()
+                    token = data.get("access_token", "")
+                    if not token:
+                        err_code = data.get("error_code", "")
+                        if err_code == "EGW00133":
+                            # 1분에 1회 제한 → 기존 token 있으면 유지
+                            if self._access_token:
+                                log.warning("token 발급 제한 (1분 1회) → 기존 token 유지")
+                                return self._access_token
+                            log.warning(f"token 발급 제한 → 60초 후 재시도 ({attempt+1}/3)")
+                            await asyncio.sleep(62)
+                            continue
+                        log.error(f"access token 발급 실패: {data}")
+                        return self._access_token
+                    expires_in = int(data.get("expires_in", 86400))
+                    self._access_token  = token
+                    self._token_expires = now + timedelta(seconds=expires_in)
+                    log.info(f"KIS access token 발급 완료 (만료: {self._token_expires.strftime('%H:%M')})")
+                    return token
+            except Exception as e:
+                log.error(f"access token 발급 오류: {e}")
+                return self._access_token
+        return self._access_token
 
     # ── REST: 종목 현재가/종가 조회 ──────────────
     async def _fetch_stock_price(self, symbol: str) -> dict | None:

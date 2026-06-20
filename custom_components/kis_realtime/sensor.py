@@ -1,4 +1,4 @@
-# v1.0.0
+# v1.6.0
 # KIS 실시간 주식 시세 Sensor Entity
 # - 종목: sensor.kis_{entity} (단위: KRW)
 # - 지수: sensor.kis_{entity} (단위: pt)

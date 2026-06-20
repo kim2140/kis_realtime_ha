@@ -1,10 +1,12 @@
-# v1.1.0
+# v1.6.0
 # KIS 실시간 주식 시세 Config Flow
-# v1.1.0: 업데이트 간격(throttle_sec, index_poll_sec) 설정 UI 추가
+# v1.4.0: selector 사용으로 UI 개선, 종목명 자동 조회, 삭제 버그 수정
 
+import re
 import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.core import callback
+from homeassistant.helpers import selector
 import aiohttp
 
 from .const import (
@@ -18,47 +20,73 @@ from .const import (
     MIN_INDEX_POLL, MAX_INDEX_POLL,
 )
 
-STEP_USER_SCHEMA = vol.Schema({
-    vol.Required(CONF_APP_KEY):    str,
-    vol.Required(CONF_APP_SECRET): str,
-    vol.Optional(CONF_URL_BASE, default=KIS_REST_BASE_DEFAULT): str,
-})
 
-STEP_INTERVAL_SCHEMA = vol.Schema({
-    vol.Optional(CONF_THROTTLE_SEC, default=DEFAULT_THROTTLE_SEC):
-        vol.All(int, vol.Range(min=MIN_THROTTLE_SEC, max=MAX_THROTTLE_SEC)),
-    vol.Optional(CONF_INDEX_POLL, default=DEFAULT_INDEX_POLL):
-        vol.All(int, vol.Range(min=MIN_INDEX_POLL, max=MAX_INDEX_POLL)),
-})
+def _to_entity(code: str, name: str) -> str:
+    """종목명 → entity 이름 변환"""
+    entity = re.sub(r'[^a-zA-Z0-9]', '_', name.lower())
+    entity = re.sub(r'_+', '_', entity).strip('_')
+    return entity or f"stock_{code}"
 
 
 async def _validate_kis_key(app_key: str, app_secret: str, url_base: str) -> bool:
-    """KIS App Key/Secret 유효성 검증"""
     url = f"{url_base}/oauth2/Approval"
-    payload = {
-        "grant_type": "client_credentials",
-        "appkey":     app_key,
-        "secretkey":  app_secret,
-    }
+    payload = {"grant_type": "client_credentials", "appkey": app_key, "secretkey": app_secret}
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                data = await resp.json()
-                return bool(data.get("approval_key"))
+                return bool((await resp.json()).get("approval_key"))
     except Exception:
         return False
 
 
-class KisRealtimeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    """KIS 실시간 시세 설정 플로우 (2단계: 인증 → 업데이트 간격)"""
+async def _get_token(app_key: str, app_secret: str, url_base: str) -> str:
+    url = f"{url_base}/oauth2/tokenP"
+    payload = {"grant_type": "client_credentials", "appkey": app_key, "appsecret": app_secret}
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload, ssl=False, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                return (await resp.json()).get("access_token", "")
+    except Exception:
+        return ""
 
+
+async def _fetch_stock_info(app_key: str, app_secret: str, url_base: str, code: str) -> tuple[str, str]:
+    """종목코드 → (entity 이름, 한글 종목명) 반환
+    entity: 자동 생성 (stock_{code})
+    friendly_name: 한글 종목명 (기본값으로 제안)
+    """
+    token = await _get_token(app_key, app_secret, url_base)
+    entity = f"stock_{code}"
+    friendly = ""
+    if not token:
+        return entity, friendly
+    url = f"{url_base}/uapi/domestic-stock/v1/quotations/inquire-price"
+    headers = {
+        "authorization": f"Bearer {token}",
+        "appkey": app_key, "appsecret": app_secret,
+        "tr_id": "FHKST01010100", "custtype": "P",
+    }
+    params = {"fid_cond_mrkt_div_code": "J", "fid_input_iscd": code}
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers, params=params, ssl=False,
+                                   timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                out = (await resp.json()).get("output", {})
+                kor_name = out.get("hts_kor_isnm", "")
+                if kor_name:
+                    friendly = kor_name  # 한글 종목명
+    except Exception:
+        pass
+    return entity, friendly
+
+
+class KisRealtimeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 1
 
     def __init__(self):
         self._data = {}
 
     async def async_step_user(self, user_input=None):
-        """1단계: App Key/Secret 입력"""
         errors = {}
         if user_input is not None:
             valid = await _validate_kis_key(
@@ -69,38 +97,35 @@ class KisRealtimeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             if valid:
                 self._data.update(user_input)
                 return await self.async_step_interval()
-            else:
-                errors["base"] = "invalid_auth"
+            errors["base"] = "invalid_auth"
 
         return self.async_show_form(
             step_id="user",
-            data_schema=STEP_USER_SCHEMA,
+            data_schema=vol.Schema({
+                vol.Required(CONF_APP_KEY): str,
+                vol.Required(CONF_APP_SECRET): str,
+                vol.Optional(CONF_URL_BASE, default=KIS_REST_BASE_DEFAULT): str,
+            }),
             errors=errors,
-            description_placeholders={"url": "https://apiportal.koreainvestment.com"},
         )
 
     async def async_step_interval(self, user_input=None):
-        """2단계: 업데이트 간격 설정"""
         if user_input is not None:
             self._data.update(user_input)
             return self.async_create_entry(
                 title="KIS 실시간 주식 시세",
-                data={
-                    **self._data,
-                    CONF_STOCKS:  [],
-                    CONF_INDEXES: [],
-                },
+                data={**self._data, CONF_STOCKS: [], CONF_INDEXES: []},
             )
-
         return self.async_show_form(
             step_id="interval",
-            data_schema=STEP_INTERVAL_SCHEMA,
-            description_placeholders={
-                "throttle_min": str(MIN_THROTTLE_SEC),
-                "throttle_max": str(MAX_THROTTLE_SEC),
-                "poll_min":     str(MIN_INDEX_POLL),
-                "poll_max":     str(MAX_INDEX_POLL),
-            },
+            data_schema=vol.Schema({
+                vol.Optional(CONF_THROTTLE_SEC, default=DEFAULT_THROTTLE_SEC):
+                    selector.NumberSelector(selector.NumberSelectorConfig(
+                        min=MIN_THROTTLE_SEC, max=MAX_THROTTLE_SEC, step=1, mode="slider")),
+                vol.Optional(CONF_INDEX_POLL, default=DEFAULT_INDEX_POLL):
+                    selector.NumberSelector(selector.NumberSelectorConfig(
+                        min=MIN_INDEX_POLL, max=MAX_INDEX_POLL, step=5, mode="slider")),
+            }),
         )
 
     @staticmethod
@@ -110,14 +135,27 @@ class KisRealtimeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 
 class KisRealtimeOptionsFlow(config_entries.OptionsFlow):
-    """종목/지수 추가·삭제 + 업데이트 간격 조정 Options Flow"""
 
     def __init__(self, config_entry):
-        self._entry   = config_entry
-        self._stocks  = list(config_entry.data.get(CONF_STOCKS, []))
-        self._indexes = list(config_entry.data.get(CONF_INDEXES, []))
-        self._throttle = config_entry.data.get(CONF_THROTTLE_SEC, DEFAULT_THROTTLE_SEC)
-        self._poll     = config_entry.data.get(CONF_INDEX_POLL,   DEFAULT_INDEX_POLL)
+        self._entry    = config_entry
+        # options 우선, 없으면 data에서 읽음
+        opts = config_entry.options if config_entry.options else config_entry.data
+        self._stocks   = list(opts.get(CONF_STOCKS, []))
+        self._indexes  = list(opts.get(CONF_INDEXES, []))
+        self._throttle = opts.get(CONF_THROTTLE_SEC, DEFAULT_THROTTLE_SEC)
+        self._poll     = opts.get(CONF_INDEX_POLL, DEFAULT_INDEX_POLL)
+        self._pending_code     = ""
+        self._pending_entity   = ""
+        self._pending_friendly = ""
+
+    def _save(self):
+        return self.async_create_entry(title="", data={
+            **self._entry.data,
+            CONF_STOCKS:       self._stocks,
+            CONF_INDEXES:      self._indexes,
+            CONF_THROTTLE_SEC: int(self._throttle),
+            CONF_INDEX_POLL:   int(self._poll),
+        })
 
     async def async_step_init(self, user_input=None):
         return await self.async_step_menu()
@@ -125,22 +163,11 @@ class KisRealtimeOptionsFlow(config_entries.OptionsFlow):
     async def async_step_menu(self, user_input=None):
         if user_input is not None:
             action = user_input.get("action")
-            if action == "add_stock":
-                return await self.async_step_add_stock()
-            elif action == "add_index":
-                return await self.async_step_add_index()
-            elif action == "remove":
-                return await self.async_step_remove()
-            elif action == "interval":
-                return await self.async_step_interval()
-            else:
-                return self.async_create_entry(title="", data={
-                    **self._entry.data,
-                    CONF_STOCKS:       self._stocks,
-                    CONF_INDEXES:      self._indexes,
-                    CONF_THROTTLE_SEC: self._throttle,
-                    CONF_INDEX_POLL:   self._poll,
-                })
+            if action == "add_stock":  return await self.async_step_add_stock_code()
+            if action == "add_index":  return await self.async_step_add_index()
+            if action == "remove":     return await self.async_step_remove()
+            if action == "interval":   return await self.async_step_interval()
+            return self._save()
 
         stock_list = ", ".join(f"{s['code']}({s['entity']})" for s in self._stocks)  or "없음"
         index_list = ", ".join(f"{i['code']}({i['entity']})" for i in self._indexes) or "없음"
@@ -148,22 +175,122 @@ class KisRealtimeOptionsFlow(config_entries.OptionsFlow):
         return self.async_show_form(
             step_id="menu",
             data_schema=vol.Schema({
-                vol.Required("action", default="save"): vol.In({
-                    "add_stock": "종목 추가 (ETF/개별주)",
-                    "add_index": "지수 추가 (코스피/코스닥)",
-                    "remove":    "종목/지수 삭제",
-                    "interval":  f"업데이트 간격 조정 (현재: 종목 {self._throttle}초 / 지수 {self._poll}초)",
-                    "save":      "저장",
-                }),
+                vol.Required("action", default="save"): selector.SelectSelector(
+                    selector.SelectSelectorConfig(options=[
+                        {"value": "add_stock", "label": "종목 추가 (ETF/개별주)"},
+                        {"value": "add_index", "label": "지수 추가 (코스피/코스닥)"},
+                        {"value": "remove",    "label": "종목/지수 삭제"},
+                        {"value": "interval",  "label": f"업데이트 간격 조정 (종목 {int(self._throttle)}초 / 지수 {int(self._poll)}초)"},
+                        {"value": "save",      "label": "저장"},
+                    ], mode="list")
+                ),
+            }),
+            description_placeholders={"stocks": stock_list, "indexes": index_list},
+        )
+
+    async def async_step_add_stock_code(self, user_input=None):
+        errors = {}
+        if user_input is not None:
+            code = str(user_input["code"]).zfill(6)
+            if any(s["code"] == code for s in self._stocks):
+                errors["code"] = "already_exists"
+            else:
+                self._pending_code = code
+                self._pending_entity, self._pending_friendly = await _fetch_stock_info(
+                    self._entry.data[CONF_APP_KEY],
+                    self._entry.data[CONF_APP_SECRET],
+                    self._entry.data.get(CONF_URL_BASE, KIS_REST_BASE_DEFAULT),
+                    code,
+                )
+                return await self.async_step_add_stock_confirm()
+
+        return self.async_show_form(
+            step_id="add_stock_code",
+            data_schema=vol.Schema({vol.Required("code"): str}),
+            errors=errors,
+            description_placeholders={"example": "예) 069500 (KODEX 200), 005930 (삼성전자)"},
+        )
+
+    async def async_step_add_stock_confirm(self, user_input=None):
+        """entity 자동 생성, friendly_name만 사용자 입력"""
+        if user_input is not None:
+            friendly = user_input.get("friendly_name", "").strip() or f"[KIS] {self._pending_code}"
+            self._stocks.append({
+                "code":          self._pending_code,
+                "entity":        self._pending_entity,
+                "friendly_name": friendly,
+            })
+            return await self.async_step_menu()
+
+        return self.async_show_form(
+            step_id="add_stock_confirm",
+            data_schema=vol.Schema({
+                vol.Optional("friendly_name", default=self._pending_friendly): str,
             }),
             description_placeholders={
-                "stocks":  stock_list,
-                "indexes": index_list,
+                "code":   self._pending_code,
+                "entity": self._pending_entity,
+                "sensor": f"sensor.kis_{self._pending_entity}",
+            },
+        )
+
+    async def async_step_add_index(self, user_input=None):
+        """지수 추가 - 1단계: 지수 선택"""
+        if user_input is not None:
+            code = str(user_input["code"]).zfill(4)
+            if any(i["code"] == code for i in self._indexes):
+                return self.async_show_form(
+                    step_id="add_index",
+                    data_schema=vol.Schema({
+                        vol.Required("code"): selector.SelectSelector(
+                            selector.SelectSelectorConfig(options=[
+                                {"value": "0001", "label": "코스피 (0001) → sensor.kis_kospi"},
+                                {"value": "1001", "label": "코스닥 (1001) → sensor.kis_kosdaq"},
+                            ], mode="list")
+                        ),
+                    }),
+                    errors={"code": "already_exists"},
+                )
+            self._pending_code = code
+            INDEX_MAP = {"0001": ("kospi", "코스피"), "1001": ("kosdaq", "코스닥")}
+            self._pending_entity, self._pending_friendly = INDEX_MAP.get(code, (f"index_{code}", code))
+            return await self.async_step_add_index_confirm()
+
+        return self.async_show_form(
+            step_id="add_index",
+            data_schema=vol.Schema({
+                vol.Required("code"): selector.SelectSelector(
+                    selector.SelectSelectorConfig(options=[
+                        {"value": "0001", "label": "코스피 (0001) → sensor.kis_kospi"},
+                        {"value": "1001", "label": "코스닥 (1001) → sensor.kis_kosdaq"},
+                    ], mode="list")
+                ),
+            }),
+        )
+
+    async def async_step_add_index_confirm(self, user_input=None):
+        """지수 추가 - 2단계: friendly_name 입력"""
+        if user_input is not None:
+            friendly = user_input.get("friendly_name", "").strip() or self._pending_friendly
+            self._indexes.append({
+                "code":          self._pending_code,
+                "entity":        self._pending_entity,
+                "friendly_name": friendly,
+            })
+            return await self.async_step_menu()
+
+        return self.async_show_form(
+            step_id="add_index_confirm",
+            data_schema=vol.Schema({
+                vol.Optional("friendly_name", default=self._pending_friendly): str,
+            }),
+            description_placeholders={
+                "code":   self._pending_code,
+                "sensor": f"sensor.kis_{self._pending_entity}",
             },
         )
 
     async def async_step_interval(self, user_input=None):
-        """업데이트 간격 조정"""
         if user_input is not None:
             self._throttle = user_input[CONF_THROTTLE_SEC]
             self._poll     = user_input[CONF_INDEX_POLL]
@@ -172,66 +299,19 @@ class KisRealtimeOptionsFlow(config_entries.OptionsFlow):
         return self.async_show_form(
             step_id="interval",
             data_schema=vol.Schema({
-                vol.Optional(CONF_THROTTLE_SEC, default=self._throttle):
-                    vol.All(int, vol.Range(min=MIN_THROTTLE_SEC, max=MAX_THROTTLE_SEC)),
-                vol.Optional(CONF_INDEX_POLL, default=self._poll):
-                    vol.All(int, vol.Range(min=MIN_INDEX_POLL, max=MAX_INDEX_POLL)),
+                vol.Optional(CONF_THROTTLE_SEC, default=int(self._throttle)):
+                    selector.NumberSelector(selector.NumberSelectorConfig(
+                        min=MIN_THROTTLE_SEC, max=MAX_THROTTLE_SEC, step=1, mode="slider")),
+                vol.Optional(CONF_INDEX_POLL, default=int(self._poll)):
+                    selector.NumberSelector(selector.NumberSelectorConfig(
+                        min=MIN_INDEX_POLL, max=MAX_INDEX_POLL, step=5, mode="slider")),
             }),
-            description_placeholders={
-                "throttle_min": str(MIN_THROTTLE_SEC),
-                "throttle_max": str(MAX_THROTTLE_SEC),
-                "poll_min":     str(MIN_INDEX_POLL),
-                "poll_max":     str(MAX_INDEX_POLL),
-            },
-        )
-
-    async def async_step_add_stock(self, user_input=None):
-        errors = {}
-        if user_input is not None:
-            code   = str(user_input["code"]).zfill(6)
-            entity = user_input["entity"].strip().lower().replace(" ", "_")
-            if any(s["code"] == code for s in self._stocks):
-                errors["code"] = "already_exists"
-            else:
-                self._stocks.append({"code": code, "entity": entity})
-                return await self.async_step_menu()
-
-        return self.async_show_form(
-            step_id="add_stock",
-            data_schema=vol.Schema({
-                vol.Required("code"):   str,
-                vol.Required("entity"): str,
-            }),
-            errors=errors,
-        )
-
-    async def async_step_add_index(self, user_input=None):
-        errors = {}
-        if user_input is not None:
-            code   = str(user_input["code"]).zfill(4)
-            entity = user_input["entity"].strip().lower().replace(" ", "_")
-            if any(i["code"] == code for i in self._indexes):
-                errors["code"] = "already_exists"
-            else:
-                self._indexes.append({"code": code, "entity": entity})
-                return await self.async_step_menu()
-
-        return self.async_show_form(
-            step_id="add_index",
-            data_schema=vol.Schema({
-                vol.Required("code", default="0001"): vol.In({
-                    "0001": "코스피(0001)",
-                    "1001": "코스닥(1001)",
-                }),
-                vol.Required("entity", default="kospi"): str,
-            }),
-            errors=errors,
         )
 
     async def async_step_remove(self, user_input=None):
         all_items = (
-            [f"stock:{s['code']}:{s['entity']}" for s in self._stocks] +
-            [f"index:{i['code']}:{i['entity']}" for i in self._indexes]
+            [{"value": f"stock:{s['code']}:{s['entity']}", "label": f"{s.get('friendly_name', s['entity'])} ({s['code']})"} for s in self._stocks] +
+            [{"value": f"index:{i['code']}:{i['entity']}", "label": f"{i.get('friendly_name', i['entity'])} ({i['code']})"} for i in self._indexes]
         )
         if not all_items:
             return await self.async_step_menu()
@@ -240,11 +320,18 @@ class KisRealtimeOptionsFlow(config_entries.OptionsFlow):
             to_remove = user_input.get("items", [])
             self._stocks  = [s for s in self._stocks  if f"stock:{s['code']}:{s['entity']}" not in to_remove]
             self._indexes = [i for i in self._indexes if f"index:{i['code']}:{i['entity']}" not in to_remove]
-            return await self.async_step_menu()
+            # 삭제 즉시 저장 → sensor 완전 제거
+            return self._save()
 
         return self.async_show_form(
             step_id="remove",
             data_schema=vol.Schema({
-                vol.Optional("items"): vol.All([vol.In(all_items)]),
+                vol.Optional("items", default=[]): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=all_items,
+                        multiple=True,
+                        mode="list",
+                    )
+                ),
             }),
         )

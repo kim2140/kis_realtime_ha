@@ -2,6 +2,7 @@
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
 [![HA Version](https://img.shields.io/badge/Home%20Assistant-2023.1%2B-blue)](https://www.home-assistant.io/)
+[![Version](https://img.shields.io/badge/Version-1.6.0-green)]()
 
 한국투자증권(KIS) API를 사용하여 국내 주식/ETF 실시간 시세와 코스피/코스닥 지수를 Home Assistant sensor로 제공합니다.
 
@@ -11,88 +12,94 @@
 - **코스피/코스닥 지수** - REST API polling 방식
 - **장외 자동 처리** - 장마감 후 종가 자동 조회, 장 시작 시 자동 재연결
 - **HA UI 설정** - App Key/Secret, 종목 추가/삭제, 업데이트 간격 모두 UI에서 설정
+- **한글 이름 지원** - sensor 표시 이름을 한글로 설정 가능
 - **풍부한 데이터** - 현재가, 등락률, 시/고/저, 거래량, 체결강도, PER/PBR, 외국인비율 등
 
 ## 설치
 
 ### HACS (권장)
 
-1. HACS → 통합구성요소 → 우측 상단 메뉴 → **사용자 정의 저장소**
-2. URL: `https://github.com/kim2140/kis_realtime_ha` / 범주: Integration
-3. **KIS 실시간 주식 시세** 검색 후 설치
+1. HACS → 통합구성요소 → 우측 상단 메뉴(점 3개) → **사용자 정의 저장소**
+2. URL: `https://github.com/kim2140/kis_realtime_ha` / 범주: `Integration`
+3. **KIS 실시간 주식 시세** 검색 후 다운로드
 4. Home Assistant 재시작
 
 ### 수동 설치
 
-1. 이 저장소의 `custom_components/kis_realtime` 폴더를
-   `/homeassistant/custom_components/kis_realtime/` 에 복사
+1. 이 저장소의 `custom_components/kis_realtime` 폴더를 `/homeassistant/custom_components/kis_realtime/` 에 복사
 2. Home Assistant 재시작
+
+## KIS Developers App Key 발급
+
+### 1. 한국투자증권 계좌 준비
+- 한국투자증권 계좌 및 HTS ID 필요
+
+### 2. 오픈API 서비스 신청
+1. [한국투자증권 홈페이지](https://www.truefriend.com) 로그인
+2. **뱅킹/서비스 → 오픈API** 접속
+3. **오픈API 서비스 신청하기** 클릭
+4. 계좌번호 선택 후 신청
+5. 카카오톡 알림톡으로 KIS Developers 임시 비밀번호 수신
+
+### 3. App Key / App Secret 발급
+1. [KIS Developers](https://apiportal.koreainvestment.com) 접속
+2. HTS ID + 임시 비밀번호로 로그인
+3. **마이페이지** → **App Key / App Secret 복사**
+
+> ⚠️ App Key와 App Secret은 외부에 노출되지 않도록 주의하세요.
 
 ## 설정
 
-### 1. KIS Developers에서 App Key 발급
+### 1. 통합구성요소 추가
 
-#### 1-1. 한국투자증권 계좌 준비
-- 한국투자증권 계좌가 없다면 먼저 계좌 개설 필요
-- HTS ID (공동인증서 로그인용 ID) 확인
-
-#### 1-2. 오픈API 서비스 신청
-1. [한국투자증권 홈페이지](https://www.truefriend.com) 로그인
-2. **뱅킹/서비스 → 오픈API** 메뉴 접속
-3. **오픈API 서비스 신청하기** 클릭
-4. 계좌번호 선택 후 신청 완료
-5. 카카오톡 알림톡으로 **KIS Developers 임시 비밀번호** 수신
-
-#### 1-3. App Key / App Secret 발급
-1. [KIS Developers](https://apiportal.koreainvestment.com) 접속
-2. HTS ID + 임시 비밀번호로 로그인
-3. 우측 상단 **마이페이지** 또는 **API신청** 클릭
-4. **신청정보** 탭에서 **App Key / App Secret 복사**
-
-> ⚠️ App Key와 App Secret은 외부에 노출되지 않도록 주의하세요.  
-> 이용기간은 신청일로부터 **1년**이며, 만료 1개월 전 문자 안내가 옵니다.
-
-### 2. HA 통합구성요소 추가
-
-**설정 → 통합구성요소 → 추가 → `KIS 실시간 주식 시세`**
+**설정 → 장치 및 서비스 → 통합구성요소 추가 → `KIS 실시간 주식 시세`**
 
 | 항목 | 설명 |
 |---|---|
 | App Key | KIS Developers에서 발급한 App Key |
 | App Secret | KIS Developers에서 발급한 App Secret |
-| API URL | 기본값 사용 권장 |
-| 종목 업데이트 간격 | WebSocket 업데이트 최소 간격 (1~60초, 기본 3초) |
-| 지수 polling 간격 | 코스피/코스닥 REST 조회 간격 (10~300초, 기본 30초) |
+| 실시간 시세 업데이트 간격 | 장중 WebSocket 업데이트 최소 간격 (1~60초, 기본 3초) |
+| 지수 조회 간격 | 코스피/코스닥 REST 조회 간격 (10~300초, 기본 30초) |
 
-### 3. 종목/지수 추가
+### 2. 종목/지수 추가
 
-통합구성요소 → KIS 실시간 주식 시세 → **설정(옵션)**
+통합구성요소 → KIS 실시간 주식 시세 → **설정(⚙️)**
 
-- **종목 추가**: 종목코드(6자리) + entity 이름 입력
-- **지수 추가**: 코스피(0001) / 코스닥(1001) 선택
-- **종목 삭제**: 목록에서 선택 후 삭제
+#### 종목 추가 (ETF/개별주)
+1. **종목 추가** 선택
+2. 종목코드 6자리 입력 (예: `069500`)
+3. 한글 종목명이 자동 조회되어 표시 이름으로 제안됨
+4. 표시 이름 확인/수정 후 Submit
+
+> ⏱️ **참고**: 종목 추가 직후 sensor 값이 나타나지 않을 수 있습니다. KIS API token 발급 제한(1분 1회)으로 인해 **최대 1분 후** 데이터가 표시됩니다.
+
+#### 지수 추가 (코스피/코스닥)
+1. **지수 추가** 선택
+2. 코스피(0001) 또는 코스닥(1001) 선택
+3. 표시 이름 확인/수정 후 Submit
+
+#### 종목/지수 삭제
+1. **종목/지수 삭제** 선택
+2. 삭제할 항목 체크 후 Submit → 즉시 삭제
 
 ## 생성되는 Sensor
 
-### 종목 Sensor (`sensor.kis_{entity}`)
+### 종목 Sensor (`sensor.kis_stock_{코드}`)
 
 | Attribute | 설명 |
 |---|---|
 | `price` | 현재가 (KRW) |
-| `change` | 전일대비 |
-| `change_rate` | 등락률 (%) |
+| `change` / `change_rate` | 전일대비 / 등락률 (%) |
 | `sign` | 등락 방향 (↑/↓/→) |
 | `open` / `high` / `low` | 시가/고가/저가 |
-| `acc_volume` | 누적거래량 |
-| `acc_amount` | 누적거래대금 |
-| `strength` | 체결강도 |
-| `buy_ratio` | 매수비율 (%) |
+| `acc_volume` / `acc_amount` | 누적거래량 / 누적거래대금 |
+| `strength` / `buy_ratio` | 체결강도 / 매수비율 (장중만) |
 | `week52_high` / `week52_low` | 52주 최고/최저가 |
 | `per` / `pbr` / `eps` / `bps` | 밸류에이션 지표 |
 | `foreign_rate` | 외국인 보유율 (%) |
 | `market_cap` | 시가총액 (억원) |
 
-### 지수 Sensor (`sensor.kis_{entity}`)
+### 지수 Sensor (`sensor.kis_kospi`, `sensor.kis_kosdaq`)
 
 | Attribute | 설명 |
 |---|---|
@@ -100,14 +107,6 @@
 | `change` / `change_rate` | 전일대비 / 등락률 |
 | `open` / `high` / `low` | 시가/고가/저가 |
 | `acc_volume` | 누적거래량 |
-
-## 사전 요구사항
-
-- Home Assistant 2023.1 이상
-- KIS Developers App Key/Secret
-
-> **참고**: v1.2.0부터 `kis_token_cache.json` 파일이 불필요합니다.  
-> App Key/Secret으로 access token을 자동 발급하며 24시간마다 자동 갱신됩니다.
 
 ## 장 운영 시간
 
@@ -119,17 +118,30 @@
 
 ## 문제 해결
 
-### sensor가 생성되지 않는 경우
-- HA 로그에서 `kis_realtime` 오류 확인
-- App Key/Secret 유효성 확인
+### 종목 추가 후 값이 안 나오는 경우
+- KIS API token 발급은 **1분에 1회** 제한이 있습니다
+- 종목 추가 후 **최대 1분** 기다리면 자동으로 데이터가 표시됩니다
 
-### 종가가 0으로 나오는 경우
-- App Key/Secret 유효성 확인
-- HA 로그에서 `access token 발급 실패` 메시지 확인
+### sensor 값이 Unknown인 경우
+- 장외 시간(주말/공휴일)에는 정상입니다
+- 평일 09:00 이후 자동으로 실시간 데이터로 업데이트됩니다
 
-### WebSocket 연결이 바로 끊기는 경우
-- 장외 시간(주말/공휴일)에는 정상 동작입니다
-- 평일 09:00 이후 자동 재연결됩니다
+### App Key 오류
+- KIS Developers에서 App Key/Secret 유효성 확인
+- 오픈API 서비스 신청 여부 확인
+
+## 변경 이력
+
+### v1.6.0
+- entity ID 자동 생성 (`stock_{코드}`)
+- 표시 이름(friendly name) 한글 지원
+- 종목 추가 시 한글 종목명 자동 조회
+- 종목/지수 삭제 즉시 반영
+- KIS token 1분 제한 오류 처리 개선
+- 업데이트 간격 슬라이더 UI
+
+### v1.0.0
+- 최초 릴리즈
 
 ## License
 
