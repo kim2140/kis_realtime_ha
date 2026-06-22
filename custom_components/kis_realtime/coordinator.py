@@ -102,7 +102,8 @@ class KisRealtimeCoordinator:
         # 마지막 수신 데이터 캐시
         self.data: dict[str, dict] = {}
 
-        self._task   = None
+        self._task         = None
+        self._index_task   = None  # v1.0.0: 지수 polling 전용 태스크
         self._session: aiohttp.ClientSession | None = None
 
     # ── 콜백 등록/해제 ──────────────────────────
@@ -126,12 +127,16 @@ class KisRealtimeCoordinator:
 
     # ── 시작/종료 ────────────────────────────────
     async def async_start(self):
-        self._session = aiohttp.ClientSession()
-        self._task = asyncio.create_task(self._run())
+        self._session    = aiohttp.ClientSession()
+        self._task       = asyncio.create_task(self._run())
+        # v1.0.0: 지수 polling 전용 태스크 (장중/장외 무관하게 독립 실행)
+        self._index_task = asyncio.create_task(self._run_index_poll())
 
     async def async_stop(self):
         if self._task:
             self._task.cancel()
+        if self._index_task:
+            self._index_task.cancel()
         if self._session:
             await self._session.close()
 
@@ -294,6 +299,30 @@ class KisRealtimeCoordinator:
         except Exception as e:
             log.error(f"지수 조회 실패 [{code}]: {e}")
             return None
+
+    # ── 지수 polling 루프 (독립 태스크) ──────────
+    async def _run_index_poll(self):
+        """v1.0.0: 장중/장외 무관하게 주기적으로 지수 REST API 조회
+        - WebSocket 루프와 별도 태스크로 실행
+        - 지수는 WebSocket 미지원이므로 REST polling 필수
+        - _index_poll 초(기본 30초) 간격으로 반복
+        """
+        # 시작 즉시 1회 조회
+        await asyncio.sleep(5)
+        while True:
+            try:
+                for code, entity_name in list(self._indexes.items()):
+                    data = await self._fetch_index_price(code)
+                    if data:
+                        self._notify(entity_name, data)
+                        log.debug(f"지수 polling: {code} {data['price']}pt")
+                    await asyncio.sleep(0.5)
+            except asyncio.CancelledError:
+                log.info("지수 polling 태스크 종료")
+                break
+            except Exception as e:
+                log.error(f"지수 polling 오류: {e}")
+            await asyncio.sleep(self._index_poll)
 
     # ── 전체 종가/지수 일괄 조회 ─────────────────
     async def _fetch_all_closing(self):
