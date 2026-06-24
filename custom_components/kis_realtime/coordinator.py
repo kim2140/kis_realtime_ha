@@ -12,6 +12,9 @@ import json
 import logging
 import time
 from datetime import datetime, time as dt_time, timedelta
+from zoneinfo import ZoneInfo
+
+KST = ZoneInfo("Asia/Seoul")
 
 import aiohttp
 import websockets
@@ -36,8 +39,8 @@ log = logging.getLogger(__name__)
 
 
 def is_market_hours() -> bool:
-    """현재 장중 여부 (평일 09:00~15:35)"""
-    now = datetime.now()
+    """현재 장중 여부 (평일 09:00~15:35) - KST 기준"""
+    now = datetime.now(KST)
     if now.weekday() >= 5:
         return False
     t = now.time()
@@ -166,7 +169,7 @@ class KisRealtimeCoordinator:
         - 1분에 1회 발급 제한 → 기존 token 유지 후 60초 후 재시도
         - App Key/Secret으로 직접 발급 → 외부 파일 불필요
         """
-        now = datetime.now()
+        now = datetime.now(KST)  # KST 기준
         # 만료 10분 전에 갱신
         if self._access_token and now < self._token_expires - timedelta(minutes=10):
             return self._access_token
@@ -306,22 +309,33 @@ class KisRealtimeCoordinator:
         - WebSocket 루프와 별도 태스크로 실행
         - 지수는 WebSocket 미지원이므로 REST polling 필수
         - _index_poll 초(기본 30초) 간격으로 반복
+        - 토큰이 없으면 직접 발급 후 조회 (장외에도 동작)
         """
-        # 시작 즉시 1회 조회
+        # HA 시작 직후 세션 준비 대기
         await asyncio.sleep(5)
+
         while True:
             try:
+                # 토큰 없으면 직접 발급 (장외에도 지수 조회 가능하도록)
+                if not self._access_token:
+                    await self._get_access_token()
+
                 for code, entity_name in list(self._indexes.items()):
                     data = await self._fetch_index_price(code)
-                    if data:
+                    # v1.0.0: price가 0 이하면 KIS 서버 점검/비정상값으로 판단 → 마지막 정상값 유지
+                    if data and float(data.get("price", 0)) > 0:
                         self._notify(entity_name, data)
                         log.debug(f"지수 polling: {code} {data['price']}pt")
+                    elif data:
+                        log.warning(f"지수 비정상값 무시: {code} price={data.get('price')}")
                     await asyncio.sleep(0.5)
+
             except asyncio.CancelledError:
                 log.info("지수 polling 태스크 종료")
                 break
             except Exception as e:
                 log.error(f"지수 polling 오류: {e}")
+
             await asyncio.sleep(self._index_poll)
 
     # ── 전체 종가/지수 일괄 조회 ─────────────────
