@@ -6,6 +6,8 @@
 # - REST API 종가 조회 (장외/시작 시)
 # - HA 재시작 시 자동 복구
 # v1.2.1: options에서 stocks/indexes 읽도록 수정 (data는 초기값 빈 리스트)
+# v1.3.0: 수급(기관 순매수) polling 간격(investor_poll_sec)을 coordinator에 전달하도록 추가
+#   ※ config_flow.py에서 사용자가 설정한 값이 여기를 거치지 않으면 항상 기본값(60초)만 쓰이므로 필수 수정
 
 from __future__ import annotations
 import logging
@@ -13,7 +15,11 @@ import logging
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
-from .const import DOMAIN, CONF_APP_KEY, CONF_APP_SECRET, CONF_URL_BASE, CONF_STOCKS, CONF_INDEXES, CONF_THROTTLE_SEC, CONF_INDEX_POLL, DEFAULT_THROTTLE_SEC, DEFAULT_INDEX_POLL
+from .const import (
+    DOMAIN, CONF_APP_KEY, CONF_APP_SECRET, CONF_URL_BASE, CONF_STOCKS, CONF_INDEXES,
+    CONF_THROTTLE_SEC, CONF_INDEX_POLL, CONF_INVESTOR_POLL,
+    DEFAULT_THROTTLE_SEC, DEFAULT_INDEX_POLL, DEFAULT_INVESTOR_POLL,
+)
 from .coordinator import KisRealtimeCoordinator
 
 log = logging.getLogger(__name__)
@@ -38,6 +44,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "indexes":         cfg.get(CONF_INDEXES, []),
         CONF_THROTTLE_SEC: cfg.get(CONF_THROTTLE_SEC, DEFAULT_THROTTLE_SEC),
         CONF_INDEX_POLL:   cfg.get(CONF_INDEX_POLL,   DEFAULT_INDEX_POLL),
+        CONF_INVESTOR_POLL: cfg.get(CONF_INVESTOR_POLL, DEFAULT_INVESTOR_POLL),  # v1.3.0
     })
 
     hass.data[DOMAIN][entry.entry_id] = coordinator

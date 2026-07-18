@@ -21,6 +21,7 @@ Real-time Korean stock/ETF prices and KOSPI/KOSDAQ index via KIS (Korea Investme
 | **Korean name support** | Set sensor display name in Korean |
 | **Rich attributes** | Price, change rate, O/H/L, volume, strength, PER/PBR, foreign ratio, etc. |
 | **Fixed entity ID** | Always `sensor.kis_{code}` regardless of display name |
+| **Supply/demand (institutional net buy) 🆕** | Per-stock institutional / foreign / individual net buy quantity via REST polling |
 
 ---
 
@@ -73,6 +74,7 @@ Real-time Korean stock/ETF prices and KOSPI/KOSDAQ index via KIS (Korea Investme
 | App Secret | App Secret from KIS Developers |
 | Realtime update interval | Minimum WebSocket update interval during market hours (1~60s, default 3s) |
 | Index poll interval | KOSPI/KOSDAQ REST polling interval (10~300s, default 30s) |
+| Supply/demand poll interval 🆕 | Institutional/foreign/individual net buy REST polling interval (20~600s, default 60s) |
 
 ### 2. Add Stock / Index
 
@@ -113,6 +115,14 @@ Integration → KIS 실시간 주식 시세 → **⚙️ Configure**
 | `per` / `pbr` / `eps` / `bps` | Valuation metrics |
 | `foreign_rate` | Foreign ownership ratio (%) |
 | `market_cap` | Market cap (100M KRW) |
+| `institution_buy` 🆕 | Institutional net buy quantity (daily cumulative, from supply/demand polling) |
+| `foreign_buy_qty` 🆕 | Foreign net buy quantity (daily cumulative) |
+| `individual_buy` 🆕 | Individual net buy quantity (daily cumulative) |
+| `investor_date` 🆕 | Reference date for the above (YYYYMMDD) |
+
+> ⚠️ **Note on supply/demand data**: `institution_buy` etc. are based on KIS's "Stock Current Price -
+> Investor" API (FHKST01010900). This is a server-aggregated snapshot, not a tick-by-tick real-time
+> value like the trade price, and is refreshed via REST polling (default every 60s), not WebSocket.
 
 ### Index Sensor (`sensor.kis_kospi`, `sensor.kis_kosdaq`)
 
@@ -148,6 +158,12 @@ Integration → KIS 실시간 주식 시세 → **⚙️ Configure**
 **App Key error**
 - Verify App Key/Secret on KIS Developers
 - Confirm Open API service is activated
+
+**`institution_buy` is 0 or looks wrong** 🆕
+- Supply/demand polling has up to 60s (default) delay — wait a bit
+- Check the `수급 polling` debug logs in HA to see if the KIS response shape matches expectations
+- These fields were implemented from community/public docs and haven't been 100% verified against a
+  live KIS response — please file an issue if the field names differ
 
 ---
 

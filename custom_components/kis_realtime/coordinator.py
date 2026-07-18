@@ -6,6 +6,14 @@
 # - 장외 시간 자동 대기, 장 시작 시 자동 연결
 # - 연결 끊김 자동 재연결
 # v1.2.0: KIS access token 자체 발급 (kis_token_cache.json 의존 제거)
+# v1.3.0: 종목별 기관/외국인/개인 순매수(수급) polling 추가
+#   [개요] 웹소켓 체결(H0STCNT0)에는 투자자 구분이 없어서, 지수 polling과 동일한 패턴으로
+#   REST(FHKST01010900, 주식현재가 투자자)를 별도 태스크로 주기 조회함.
+#   기존 self.data[entity_name]을 통째로 덮어쓰면 가격 정보가 날아가므로, 수급 값은
+#   기존 캐시에 "병합"해서 _notify 하도록 구현 (아래 _run_investor_poll 참고).
+#   ⚠ 주의: FHKST01010900 TR_ID와 필드명(orgn_ntby_qty 등)은 KIS 공식 문서/커뮤니티 자료
+#   기준으로 확인했지만, 실제 앱키로 살아있는 응답을 직접 테스트하지는 못했음.
+#   처음 실행 시 로그(log.debug)로 실제 응답 구조를 한번 확인해보는 걸 권장.
 
 import asyncio
 import json
@@ -24,13 +32,16 @@ from .const import (
     KIS_WS_URL,
     DEFAULT_THROTTLE_SEC,
     DEFAULT_INDEX_POLL,
+    DEFAULT_INVESTOR_POLL,
     CONF_THROTTLE_SEC,
     CONF_INDEX_POLL,
+    CONF_INVESTOR_POLL,
     MARKET_OPEN_H, MARKET_OPEN_M,
     MARKET_CLOSE_H, MARKET_CLOSE_M,
     TR_STOCK_CONTRACT,
     TR_STOCK_PRICE,
     TR_INDEX_PRICE,
+    TR_STOCK_INVESTOR,
     SIGN_MAP,
     WS_FIELD_NAMES,
 )
@@ -93,6 +104,7 @@ class KisRealtimeCoordinator:
         # 업데이트 간격 (UI에서 설정 가능)
         self._throttle_sec = config.get(CONF_THROTTLE_SEC, DEFAULT_THROTTLE_SEC)
         self._index_poll   = config.get(CONF_INDEX_POLL,   DEFAULT_INDEX_POLL)
+        self._investor_poll = config.get(CONF_INVESTOR_POLL, DEFAULT_INVESTOR_POLL)  # v1.3.0
 
         # KIS access token 자체 발급 및 캐시
         # App Key/Secret으로 직접 발급 → kis_token_cache.json 불필요
@@ -107,6 +119,7 @@ class KisRealtimeCoordinator:
 
         self._task         = None
         self._index_task   = None  # v1.0.0: 지수 polling 전용 태스크
+        self._investor_task = None  # v1.3.0: 수급(기관 순매수) polling 전용 태스크
         self._session: aiohttp.ClientSession | None = None
 
     # ── 콜백 등록/해제 ──────────────────────────
@@ -134,12 +147,16 @@ class KisRealtimeCoordinator:
         self._task       = asyncio.create_task(self._run())
         # v1.0.0: 지수 polling 전용 태스크 (장중/장외 무관하게 독립 실행)
         self._index_task = asyncio.create_task(self._run_index_poll())
+        # v1.3.0: 수급(기관 순매수) polling 전용 태스크
+        self._investor_task = asyncio.create_task(self._run_investor_poll())
 
     async def async_stop(self):
         if self._task:
             self._task.cancel()
         if self._index_task:
             self._index_task.cancel()
+        if self._investor_task:  # v1.3.0
+            self._investor_task.cancel()
         if self._session:
             await self._session.close()
 
@@ -264,6 +281,55 @@ class KisRealtimeCoordinator:
             log.error(f"종목 가격 조회 실패 [{symbol}]: {e}")
             return None
 
+    # ── REST: 종목별 기관/외국인/개인 순매수(수급) 조회 ──── v1.3.0 신규
+    async def _fetch_stock_investor(self, symbol: str) -> dict | None:
+        """FHKST01010900 - 주식현재가 투자자 (기관계/외국인/개인 순매수 수량)
+
+        - KIS 서버가 집계한 당일 누적 순매수 수량 스냅샷 (체결처럼 틱 단위 아님)
+        - output이 배열(list)로 오는 경우와 단일 객체(dict)로 오는 경우 둘 다 대응
+          → 문서상으로는 최신순 배열일 가능성이 높다고 알려져 있으나, 계정 없이는
+            100% 확정할 수 없어서 방어적으로 두 형태 모두 처리하도록 작성함
+        """
+        access_token = await self._get_access_token()
+        if not access_token:
+            return None
+
+        url = f"{self._url_base}/uapi/domestic-stock/v1/quotations/inquire-investor"
+        headers = {
+            "authorization": f"Bearer {access_token}",
+            "appkey":        self._app_key,
+            "appsecret":     self._app_secret,
+            "tr_id":         TR_STOCK_INVESTOR,
+            "custtype":      "P",
+        }
+        params = {"fid_cond_mrkt_div_code": "J", "fid_input_iscd": symbol}
+        try:
+            async with self._session.get(url, headers=headers, params=params, ssl=False) as resp:
+                body = await resp.json()
+                raw_out = body.get("output", body.get("output1", {}))
+
+                # 응답이 배열이면 가장 최근(0번째) 값을 사용, 객체면 그대로 사용
+                if isinstance(raw_out, list):
+                    if not raw_out:
+                        return None
+                    out = raw_out[0]
+                else:
+                    out = raw_out
+                if not out:
+                    return None
+
+                return {
+                    # 기관계 순매수 수량 (요청하신 "기관 순매수" 핵심 필드)
+                    "institution_buy": int(out.get("orgn_ntby_qty", 0) or 0),
+                    # 외국인/개인 순매수도 같은 응답에 포함되어 있어 함께 저장 (참고용)
+                    "foreign_buy_qty": int(out.get("frgn_ntby_qty", 0) or 0),
+                    "individual_buy":  int(out.get("prsn_ntby_qty", 0) or 0),
+                    "investor_date":   out.get("stck_bsop_date", ""),
+                }
+        except Exception as e:
+            log.error(f"수급(투자자매매동향) 조회 실패 [{symbol}]: {e}")
+            return None
+
     # ── REST: 지수 조회 ──────────────────────────
     async def _fetch_index_price(self, code: str) -> dict | None:
         """FHPUP02100000 - 코스피/코스닥 지수"""
@@ -337,6 +403,38 @@ class KisRealtimeCoordinator:
                 log.error(f"지수 polling 오류: {e}")
 
             await asyncio.sleep(self._index_poll)
+
+    # ── 수급(기관 순매수) polling 루프 (독립 태스크) ──── v1.3.0 신규
+    async def _run_investor_poll(self):
+        """장중/장외 무관하게 주기적으로 종목별 기관/외국인/개인 순매수 조회
+
+        - _index_poll과 동일한 패턴: 별도 태스크로 독립 실행
+        - 기존 self.data(가격/체결 정보)를 지우지 않도록, 조회한 수급 값만
+          기존 캐시 위에 "병합"해서 _notify 호출 (그냥 덮어쓰면 가격 필드가 사라짐)
+        """
+        await asyncio.sleep(7)  # 시작 직후 세션/토큰 준비 대기
+
+        while True:
+            try:
+                for symbol, entity_name in list(self._stocks.items()):
+                    investor = await self._fetch_stock_investor(symbol)
+                    if investor:
+                        # 기존 캐시(가격 등) + 새로 받은 수급 데이터 병합
+                        merged = {**self.data.get(entity_name, {}), **investor}
+                        self._notify(entity_name, merged)
+                        log.debug(
+                            f"수급 polling: {symbol} 기관 {investor['institution_buy']:,} / "
+                            f"외국인 {investor['foreign_buy_qty']:,} / 개인 {investor['individual_buy']:,}"
+                        )
+                    await asyncio.sleep(0.5)
+
+            except asyncio.CancelledError:
+                log.info("수급 polling 태스크 종료")
+                break
+            except Exception as e:
+                log.error(f"수급 polling 오류: {e}")
+
+            await asyncio.sleep(self._investor_poll)
 
     # ── 전체 종가/지수 일괄 조회 ─────────────────
     async def _fetch_all_closing(self):

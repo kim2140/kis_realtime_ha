@@ -1,6 +1,10 @@
 # v1.0.0
 # KIS 실시간 주식 시세 Custom Integration 상수 정의
 # v1.1.0: 업데이트 간격 설정 추가
+# v1.2.0: 종목별 기관/외국인/개인 순매수(수급) 조회용 상수 추가
+#   [개요] 기존에는 웹소켓 체결가 + 지수만 다뤘는데, 여기에 "수급"(기관 순매수)을
+#   추가하기 위해 KIS의 "주식현재가 투자자"(FHKST01010900) TR과 그 폴링 주기
+#   설정값을 새로 정의함. 실시간 체결에는 투자자별 데이터가 없어서 REST로 별도 polling 필요.
 
 DOMAIN = "kis_realtime"
 
@@ -12,6 +16,7 @@ CONF_STOCKS       = "stocks"
 CONF_INDEXES      = "indexes"
 CONF_THROTTLE_SEC = "throttle_sec"   # WebSocket 종목 업데이트 간격 (초)
 CONF_INDEX_POLL   = "index_poll_sec" # 지수 polling 간격 (초)
+CONF_INVESTOR_POLL = "investor_poll_sec"  # v1.2.0: 기관/외국인/개인 수급 polling 간격 (초)
 
 # KIS API
 KIS_REST_BASE_DEFAULT = "https://openapi.koreainvestment.com:9443"
@@ -25,6 +30,13 @@ MAX_THROTTLE_SEC     = 60
 MIN_INDEX_POLL       = 10
 MAX_INDEX_POLL       = 300
 
+# v1.2.0: 수급(투자자별 매매동향) polling 간격 기본값 / 범위
+# 기관 순매수는 체결처럼 매 틱 바뀌지 않고 KIS 서버 집계 기준으로 갱신되므로
+# 지수보다 더 느슨한 기본 60초로 설정 (너무 자주 호출하면 API 호출 제한에 걸릴 수 있음)
+DEFAULT_INVESTOR_POLL = 60
+MIN_INVESTOR_POLL     = 20
+MAX_INVESTOR_POLL     = 600
+
 # 장 운영 시간 (KST)
 MARKET_OPEN_H  = 8
 MARKET_OPEN_M  = 55
@@ -37,6 +49,11 @@ TR_STOCK_CONTRACT = "H0STCNT0"
 # REST TR ID
 TR_STOCK_PRICE = "FHKST01010100"
 TR_INDEX_PRICE = "FHPUP02100000"
+# v1.2.0: 주식현재가 투자자(기관계/외국인/개인 순매수) - 국내주식 기본시세 카테고리
+# 공식 문서: https://apiportal.koreainvestment.com (API 가이드 > [국내주식] 기본시세 > 주식현재가 투자자)
+# ⚠ 실제 KIS 서버 응답으로 100% 검증은 못했음 (앱키가 없어 테스트 불가) — 공개 튜토리얼/커뮤니티
+#   자료 기준으로 확인한 TR_ID/필드명이니, 실제 계정으로 처음 실행할 때 로그로 응답을 한번 확인해보는 걸 권장
+TR_STOCK_INVESTOR = "FHKST01010900"
 
 # 부호 매핑
 SIGN_MAP = {

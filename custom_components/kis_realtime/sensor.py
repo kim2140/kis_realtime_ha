@@ -15,6 +15,9 @@
 #     - suggested_object_id = "kis_{code}" → registry 최초 등록 시 entity_id 고정
 #     - self.entity_id 직접 지정 → 이미 등록된 entity도 강제 고정
 #     - _attr_has_entity_name = False → friendly_name 기반 변환 차단
+# [v1.8.0] 종목별 기관/외국인/개인 순매수(수급) 속성 추가
+#   coordinator.py의 _run_investor_poll이 institution_buy/foreign_buy_qty/individual_buy/
+#   investor_date를 기존 데이터에 병합해서 넘겨주므로, 여기서는 그 값을 속성으로 노출만 하면 됨.
 # ─────────────────────────────────────────────────────────────────────────────
 
 from __future__ import annotations
@@ -162,6 +165,11 @@ class KisStockSensor(SensorEntity):
             "market_cap":    self._data.get("market_cap", 0),
             "vol_rate":      self._data.get("vol_rate", "0"),
             "vwap":          self._data.get("vwap", "0"),
+            # v1.8.0: 기관/외국인/개인 순매수 (수급) - investor polling에서 병합됨
+            "institution_buy": self._data.get("institution_buy", 0),
+            "foreign_buy_qty":  self._data.get("foreign_buy_qty", 0),
+            "individual_buy":   self._data.get("individual_buy", 0),
+            "investor_date":    self._data.get("investor_date", ""),
             "last_updated":  datetime.now().isoformat(),
         }
 

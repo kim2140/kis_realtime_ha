@@ -11,6 +11,8 @@
 #   - 변경: sensor.kis_329200 (종목코드 6자리, 단순하고 명확)
 #   - _to_entity() 함수 제거 (더 이상 사용 안 함)
 #   - 지수는 기존 유지: sensor.kis_kospi / sensor.kis_kosdaq
+# [v1.8.0] 수급(기관 순매수) polling 간격 설정 슬라이더 추가
+#   - 기존 종목/지수 간격 설정 화면에 investor_poll_sec 슬라이더만 추가 (구조는 그대로)
 # ─────────────────────────────────────────────────────────────────────────────
 
 import voluptuous as vol
@@ -23,11 +25,12 @@ from .const import (
     DOMAIN,
     CONF_APP_KEY, CONF_APP_SECRET, CONF_URL_BASE,
     CONF_STOCKS, CONF_INDEXES,
-    CONF_THROTTLE_SEC, CONF_INDEX_POLL,
+    CONF_THROTTLE_SEC, CONF_INDEX_POLL, CONF_INVESTOR_POLL,
     KIS_REST_BASE_DEFAULT,
-    DEFAULT_THROTTLE_SEC, DEFAULT_INDEX_POLL,
+    DEFAULT_THROTTLE_SEC, DEFAULT_INDEX_POLL, DEFAULT_INVESTOR_POLL,
     MIN_THROTTLE_SEC, MAX_THROTTLE_SEC,
     MIN_INDEX_POLL, MAX_INDEX_POLL,
+    MIN_INVESTOR_POLL, MAX_INVESTOR_POLL,
 )
 
 
@@ -135,6 +138,10 @@ class KisRealtimeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Optional(CONF_INDEX_POLL, default=DEFAULT_INDEX_POLL):
                     selector.NumberSelector(selector.NumberSelectorConfig(
                         min=MIN_INDEX_POLL, max=MAX_INDEX_POLL, step=5, mode="slider")),
+                # v1.8.0: 수급(기관 순매수) polling 간격
+                vol.Optional(CONF_INVESTOR_POLL, default=DEFAULT_INVESTOR_POLL):
+                    selector.NumberSelector(selector.NumberSelectorConfig(
+                        min=MIN_INVESTOR_POLL, max=MAX_INVESTOR_POLL, step=10, mode="slider")),
             }),
         )
 
@@ -154,6 +161,7 @@ class KisRealtimeOptionsFlow(config_entries.OptionsFlow):
         self._indexes  = list(opts.get(CONF_INDEXES, []))
         self._throttle = opts.get(CONF_THROTTLE_SEC, DEFAULT_THROTTLE_SEC)
         self._poll     = opts.get(CONF_INDEX_POLL, DEFAULT_INDEX_POLL)
+        self._investor_poll = opts.get(CONF_INVESTOR_POLL, DEFAULT_INVESTOR_POLL)  # v1.8.0
         self._pending_code     = ""
         self._pending_entity   = ""
         self._pending_friendly = ""
@@ -166,6 +174,7 @@ class KisRealtimeOptionsFlow(config_entries.OptionsFlow):
             CONF_INDEXES:      self._indexes,
             CONF_THROTTLE_SEC: int(self._throttle),
             CONF_INDEX_POLL:   int(self._poll),
+            CONF_INVESTOR_POLL: int(self._investor_poll),  # v1.8.0
         })
 
     async def async_step_init(self, user_input=None):
@@ -193,7 +202,7 @@ class KisRealtimeOptionsFlow(config_entries.OptionsFlow):
                         {"value": "add_stock", "label": "종목 추가 (ETF/개별주)"},
                         {"value": "add_index", "label": "지수 추가 (코스피/코스닥)"},
                         {"value": "remove",    "label": "종목/지수 삭제"},
-                        {"value": "interval",  "label": f"업데이트 간격 조정 (종목 {int(self._throttle)}초 / 지수 {int(self._poll)}초)"},
+                        {"value": "interval",  "label": f"업데이트 간격 조정 (종목 {int(self._throttle)}초 / 지수 {int(self._poll)}초 / 수급 {int(self._investor_poll)}초)"},
                         {"value": "save",      "label": "저장"},
                     ], mode="list")
                 ),
@@ -312,6 +321,7 @@ class KisRealtimeOptionsFlow(config_entries.OptionsFlow):
         if user_input is not None:
             self._throttle = user_input[CONF_THROTTLE_SEC]
             self._poll     = user_input[CONF_INDEX_POLL]
+            self._investor_poll = user_input[CONF_INVESTOR_POLL]  # v1.8.0
             return await self.async_step_menu()
 
         return self.async_show_form(
@@ -323,6 +333,10 @@ class KisRealtimeOptionsFlow(config_entries.OptionsFlow):
                 vol.Optional(CONF_INDEX_POLL, default=int(self._poll)):
                     selector.NumberSelector(selector.NumberSelectorConfig(
                         min=MIN_INDEX_POLL, max=MAX_INDEX_POLL, step=5, mode="slider")),
+                # v1.8.0: 수급(기관 순매수) polling 간격
+                vol.Optional(CONF_INVESTOR_POLL, default=int(self._investor_poll)):
+                    selector.NumberSelector(selector.NumberSelectorConfig(
+                        min=MIN_INVESTOR_POLL, max=MAX_INVESTOR_POLL, step=10, mode="slider")),
             }),
         )
 
