@@ -20,6 +20,12 @@
 #   이벤트 루프를 막지 않도록 hass.async_add_executor_job으로 별도 스레드에서 실행함.
 #   지수 polling(_run_index_poll)과는 별개로, 종목 수급과 같은 _run_investor_poll
 #   루프 안에서 같이 처리 (업데이트 주기가 어차피 같은 수준이라 태스크를 늘리지 않음).
+# v1.3.1.1: 지수 수급을 KIS REST(FHPDK01010200, 업종 투자자매매동향)로 우선 시도하고,
+#   실패하면 pykrx로 자동 대체(fallback)하도록 변경.
+#   [개요] 사용자가 KIS 가이드에서 지수용 TR_ID를 찾아줌. 다만 Claude가 독립적으로
+#   재검증은 못한 값이라, 혹시 틀렸을 때를 대비해 기존 pykrx 경로를 지우지 않고
+#   "1차 시도: KIS REST → 실패 시 2차 시도: pykrx" 순서로 이중 안전망을 만듦.
+#   원본 응답은 log.debug로 그대로 남겨서, 필드명이 안 맞으면 로그 보고 바로 고칠 수 있게 함.
 
 import asyncio
 import json
@@ -48,6 +54,7 @@ from .const import (
     TR_STOCK_PRICE,
     TR_INDEX_PRICE,
     TR_STOCK_INVESTOR,
+    TR_INDEX_INVESTOR,
     INDEX_MARKET_MAP,
     SIGN_MAP,
     WS_FIELD_NAMES,
@@ -99,6 +106,9 @@ def parse_ws_message(raw: str) -> dict | None:
 
 def _sync_fetch_market_investor(market: str) -> dict | None:
     """v1.4.0 신규 - pykrx로 시장 전체(KOSPI/KOSDAQ) 기관/외국인/개인 순매수 조회
+    v1.3.1.1: 원인 파악이 안 되는 "조용한 실패"를 없애기 위해 로그를 촘촘히 추가
+      (이전 버전은 df가 비어있을 때 아무 로그도 안 남기고 그냥 None을 반환해서,
+       왜 지수 수급이 안 뜨는지 사용자 쪽 로그로는 전혀 알 수 없었음)
 
     - 동기(sync) 함수라서 반드시 hass.async_add_executor_job으로 별도 스레드에서 호출할 것
       (asyncio 이벤트 루프 안에서 직접 부르면 다른 sensor 업데이트가 멈춤)
@@ -107,10 +117,11 @@ def _sync_fetch_market_investor(market: str) -> dict | None:
     - 최근 10일치를 조회해서 가장 최근(마지막) 행을 사용 (당일 데이터가 아직 없으면
       직전 영업일 값이 자동으로 잡힘)
     """
+    log.debug(f"[수급] pykrx 조회 시작: market={market}")
     try:
         from pykrx import stock as pykrx_stock  # 지연 import: 설치 전에도 통합 자체는 죽지 않게
-    except ImportError:
-        log.error("pykrx가 설치되지 않았습니다. manifest.json requirements를 확인하세요.")
+    except ImportError as e:
+        log.error(f"[수급] pykrx import 실패 (설치가 안 됐거나 버전 문제): {e}")
         return None
 
     try:
@@ -119,6 +130,7 @@ def _sync_fetch_market_investor(market: str) -> dict | None:
         todate   = today.strftime("%Y%m%d")
         df = pykrx_stock.get_market_trading_volume_by_date(fromdate, todate, market)
         if df is None or df.empty:
+            log.warning(f"[수급] pykrx 응답이 비어있음: market={market}, 기간={fromdate}~{todate}")
             return None
         last = df.iloc[-1]
         last_date = df.index[-1]
@@ -374,8 +386,58 @@ class KisRealtimeCoordinator:
             log.error(f"수급(투자자매매동향) 조회 실패 [{symbol}]: {e}")
             return None
 
-    # ── pykrx: 시장 전체(코스피/코스닥) 수급 조회 ──── v1.4.0 신규
-    async def _fetch_index_investor(self, code: str) -> dict | None:
+    # ── REST: 지수(업종) 투자자매매동향 조회 ──── v1.3.1.1 신규
+    async def _fetch_index_investor_kis(self, code: str) -> dict | None:
+        """FHPDK01010200 - 업종별 투자자매매동향 (지수 기준 기관/외국인/개인 순매수)
+
+        ⚠ TR_ID·파라미터는 사용자가 KIS 가이드에서 찾아준 값이고, 응답 필드명은
+        종목용 TR(FHKST01010900)과 같은 네이밍 패턴일 거라 "추정"해서 파싱함.
+        원본 응답을 log.debug로 통째로 남기니, 값이 이상하면 그 로그를 보고
+        필드명을 다시 맞추면 됨.
+        """
+        access_token = await self._get_access_token()
+        if not access_token:
+            return None
+
+        url = f"{self._url_base}/uapi/domestic-stock/v1/quotations/inquire-investor-trend"
+        headers = {
+            "authorization": f"Bearer {access_token}",
+            "appkey":        self._app_key,
+            "appsecret":     self._app_secret,
+            "tr_id":         TR_INDEX_INVESTOR,
+            "custtype":      "P",
+        }
+        params = {
+            "FID_INPUT_ISCD":    code,  # 0001=코스피, 1001=코스닥
+            "FID_DIV_CLS_CODE":  "0",   # 0: 정규장 수급 기준
+        }
+        try:
+            async with self._session.get(url, headers=headers, params=params, ssl=False) as resp:
+                body = await resp.json()
+                log.debug(f"[수급] KIS 지수 투자자매매동향 원본 응답 [{code}]: {body}")
+
+                raw_out = body.get("output", body.get("output1", {}))
+                if isinstance(raw_out, list):
+                    if not raw_out:
+                        return None
+                    out = raw_out[0]
+                else:
+                    out = raw_out
+                if not out:
+                    return None
+
+                return {
+                    "institution_buy": int(out.get("orgn_ntby_qty", 0) or 0),
+                    "foreign_buy_qty": int(out.get("frgn_ntby_qty", 0) or 0),
+                    "individual_buy":  int(out.get("prsn_ntby_qty", 0) or 0),
+                    "investor_date":   out.get("stck_bsop_date", ""),
+                }
+        except Exception as e:
+            log.error(f"[수급] KIS 지수 투자자매매동향 조회 실패 [{code}]: {e}")
+            return None
+
+    # ── pykrx: 시장 전체(코스피/코스닥) 수급 조회 (KIS 실패 시 대체용) ──── v1.4.0
+    async def _fetch_index_investor_pykrx(self, code: str) -> dict | None:
         """지수 코드(0001/1001)를 KOSPI/KOSDAQ 문자열로 매핑해서 pykrx 조회
 
         실제 네트워크 호출은 동기 함수(_sync_fetch_market_investor)에서 일어나므로
@@ -387,8 +449,23 @@ class KisRealtimeCoordinator:
         try:
             return await self.hass.async_add_executor_job(_sync_fetch_market_investor, market)
         except Exception as e:
-            log.error(f"지수 수급 조회 실패 [{code}]: {e}")
+            log.error(f"[수급] pykrx 지수 수급 조회 실패 [{code}]: {e}")
             return None
+
+    # ── 지수 수급 통합 진입점: KIS REST 우선, 실패 시 pykrx로 대체 ──── v1.3.1.1
+    async def _fetch_index_investor(self, code: str) -> dict | None:
+        result = await self._fetch_index_investor_kis(code)
+        if result:
+            log.debug(f"[수급] 지수 {code}: KIS REST 성공 - {result}")
+            return result
+
+        log.debug(f"[수급] 지수 {code}: KIS REST 실패/빈 응답 → pykrx로 재시도")
+        result = await self._fetch_index_investor_pykrx(code)
+        if result:
+            log.debug(f"[수급] 지수 {code}: pykrx 대체 성공 - {result}")
+        else:
+            log.warning(f"[수급] 지수 {code}: KIS REST, pykrx 둘 다 실패 (당분간 수급 속성이 안 뜰 수 있음)")
+        return result
 
     # ── REST: 지수 조회 ──────────────────────────
     async def _fetch_index_price(self, code: str) -> dict | None:

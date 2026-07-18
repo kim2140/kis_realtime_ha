@@ -21,6 +21,11 @@
 # [v1.9.0] 지수(코스피/코스닥) 시장 전체 기관/외국인/개인 순매수 속성 추가
 #   KIS API에는 시장 전체 기준 수급 TR_ID가 확인이 안 돼서, coordinator.py에서
 #   pykrx로 대신 조회한 값을 KisIndexSensor에도 동일한 패턴으로 노출.
+# [v1.10.0] 종목 Sensor 속성 순서 정리 (수급 관련 항목을 한 블록으로 모음)
+#   기존에는 foreign_rate/foreign_buy가 위쪽에, institution_buy 등 나머지 수급
+#   항목은 vwap 뒤(아래쪽)에 떨어져 있어서 HA 앱에서 보면 관련 항목이 여기저기
+#   흩어져 보이는 문제가 있었음 → foreign_buy 바로 다음에 나머지 수급 항목을
+#   전부 붙여서 하나의 블록으로 보이도록 순서만 재배치 (값 계산 로직은 그대로)
 # ─────────────────────────────────────────────────────────────────────────────
 
 from __future__ import annotations
@@ -163,16 +168,20 @@ class KisStockSensor(SensorEntity):
             "eps":           self._data.get("eps", "0"),
             "bps":           self._data.get("bps", "0"),
             "foreign_rate":  self._data.get("foreign_rate", "0"),
-            "foreign_buy":   self._data.get("foreign_buy", "0"),
+            # ── 수급(외국인/기관/개인) 관련 항목을 한 블록으로 모음 [v1.10.0 정리] ──
+            # foreign_buy: 현재가 조회(inquire-price) API에 같이 딸려오는 값 (기존부터 있던 필드)
+            # institution_buy 이하 4개: 투자자매매동향(inquire-investor) API에서 별도 조회한 값
+            # → 소스가 달라서 foreign_buy와 foreign_buy_qty 값이 100% 같지는 않을 수 있음
+            "foreign_buy":      self._data.get("foreign_buy", "0"),
+            "institution_buy":  self._data.get("institution_buy", 0),
+            "foreign_buy_qty":  self._data.get("foreign_buy_qty", 0),
+            "individual_buy":   self._data.get("individual_buy", 0),
+            "investor_date":    self._data.get("investor_date", ""),
+            # ── 여기까지 수급 블록 ──
             "listed_shares": self._data.get("listed_shares", "0"),
             "market_cap":    self._data.get("market_cap", 0),
             "vol_rate":      self._data.get("vol_rate", "0"),
             "vwap":          self._data.get("vwap", "0"),
-            # v1.8.0: 기관/외국인/개인 순매수 (수급) - investor polling에서 병합됨
-            "institution_buy": self._data.get("institution_buy", 0),
-            "foreign_buy_qty":  self._data.get("foreign_buy_qty", 0),
-            "individual_buy":   self._data.get("individual_buy", 0),
-            "investor_date":    self._data.get("investor_date", ""),
             "last_updated":  datetime.now().isoformat(),
         }
 
