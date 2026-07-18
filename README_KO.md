@@ -2,7 +2,7 @@
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
 [![HA Version](https://img.shields.io/badge/Home%20Assistant-2023.1%2B-blue)](https://www.home-assistant.io/)
-[![Version](https://img.shields.io/badge/Version-1.3.1-green)]()
+[![Version](https://img.shields.io/badge/Version-1.3.1.1-orange)]()
 
 한국투자증권(KIS) API를 사용하여 국내 주식/ETF 실시간 시세와 코스피/코스닥 지수를 Home Assistant sensor로 제공합니다.
 

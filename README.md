@@ -4,7 +4,7 @@
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
 [![HA Version](https://img.shields.io/badge/Home%20Assistant-2023.1%2B-blue)](https://www.home-assistant.io/)
-[![Version](https://img.shields.io/badge/Version-1.3.1-green)]()
+[![Version](https://img.shields.io/badge/Version-1.3.1.1-orange)]()
 
 Real-time Korean stock/ETF prices and KOSPI/KOSDAQ index via KIS (Korea Investment & Securities) API as Home Assistant sensors.
 
