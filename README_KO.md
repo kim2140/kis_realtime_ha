@@ -2,7 +2,7 @@
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
 [![HA Version](https://img.shields.io/badge/Home%20Assistant-2023.1%2B-blue)](https://www.home-assistant.io/)
-[![Version](https://img.shields.io/badge/Version-1.3.1.1-orange)]()
+[![Version](https://img.shields.io/badge/Version-1.3.1.3-orange)]()
 
 한국투자증권(KIS) API를 사용하여 국내 주식/ETF 실시간 시세와 코스피/코스닥 지수를 Home Assistant sensor로 제공합니다.
 
@@ -113,12 +113,12 @@
 | `per` / `pbr` / `eps` / `bps` | 밸류에이션 지표 |
 | `foreign_rate` | 외국인 보유율 (%) |
 | `market_cap` | 시가총액 (억원) |
-| `institution_buy` 🆕 | 기관계 순매수 수량 (당일 누적, 수급 polling 기준) |
-| `foreign_buy_qty` 🆕 | 외국인 순매수 수량 (당일 누적) |
-| `individual_buy` 🆕 | 개인 순매수 수량 (당일 누적) |
+| `investor_institution_buy` 🆕 | 기관계 순매수 수량 (당일 누적, 수급 polling 기준) |
+| `investor_foreign_buy` 🆕 | 외국인 순매수 수량 (당일 누적) |
+| `investor_individual_buy` 🆕 | 개인 순매수 수량 (당일 누적) |
 | `investor_date` 🆕 | 위 수급 데이터 기준일자 (YYYYMMDD) |
 
-> ⚠️ **수급 데이터 관련 주의**: `institution_buy` 등은 KIS "주식현재가 투자자"(FHKST01010900) API를
+> ⚠️ **수급 데이터 관련 주의**: `investor_institution_buy` 등은 KIS "주식현재가 투자자"(FHKST01010900) API를
 > 기반으로 하며, 체결가처럼 틱 단위 실시간이 아니라 KIS 서버가 집계한 스냅샷입니다.
 > 웹소켓이 아니라 REST polling(기본 300초/5분 간격)으로 갱신됩니다.
 > KRX 투자자별매매동향 데이터 자체가 하루 중 정해진 시각(09:30·10:00·11:30·13:20·14:30 잠정치,
@@ -132,12 +132,12 @@
 | `change` / `change_rate` | 전일대비 / 등락률 |
 | `open` / `high` / `low` | 시가/고가/저가 |
 | `acc_volume` | 누적거래량 |
-| `institution_buy` 🆕 | 시장 전체 기관계 순매수 수량 (KOSPI/KOSDAQ 합계) |
-| `foreign_buy_qty` 🆕 | 시장 전체 외국인 순매수 수량 |
-| `individual_buy` 🆕 | 시장 전체 개인 순매수 수량 |
+| `investor_institution_buy` 🆕 | 시장 전체 기관계 순매수 수량 (KOSPI/KOSDAQ 합계) |
+| `investor_foreign_buy` 🆕 | 시장 전체 외국인 순매수 수량 |
+| `investor_individual_buy` 🆕 | 시장 전체 개인 순매수 수량 |
 | `investor_date` 🆕 | 위 수급 데이터 기준일자 |
 
-> ⚠️ **지수 수급 데이터 출처가 다릅니다**: 종목별 수급(`institution_buy` 등)은 KIS API를 쓰지만,
+> ⚠️ **지수 수급 데이터 출처가 다릅니다**: 종목별 수급(`investor_institution_buy` 등)은 KIS API를 쓰지만,
 > 지수(시장 전체) 수급은 KIS에 해당 TR_ID를 찾지 못해서 **[pykrx](https://github.com/sharebook-kr/pykrx)**
 > 라이브러리로 KRX 정보데이터시스템을 직접 조회합니다. KIS 앱키와는 무관한 별도 공개 데이터
 > 소스이며, `manifest.json`에 `pykrx` 의존성이 추가되어 HA가 자동으로 설치합니다.
@@ -168,7 +168,7 @@
 - KIS Developers에서 App Key/Secret 유효성 확인
 - 오픈API 서비스 신청 여부 확인
 
-**`institution_buy`(기관 순매수) 값이 0이거나 이상한 경우** 🆕
+**`investor_institution_buy`(기관 순매수) 값이 0이거나 이상한 경우** 🆕
 - 수급 polling은 최대 5분(기본값) 지연이 있음 → 잠시 기다려보기
 - HA 로그에서 `수급 polling` 관련 debug 로그를 확인해서 KIS 응답 구조가 예상과 다른지 확인
 - 위 값들은 커뮤니티/공식 문서 기준으로 구현했고 실제 서버 응답으로 100% 검증되진 않았으므로,

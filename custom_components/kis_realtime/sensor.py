@@ -26,6 +26,14 @@
 #   항목은 vwap 뒤(아래쪽)에 떨어져 있어서 HA 앱에서 보면 관련 항목이 여기저기
 #   흩어져 보이는 문제가 있었음 → foreign_buy 바로 다음에 나머지 수급 항목을
 #   전부 붙여서 하나의 블록으로 보이도록 순서만 재배치 (값 계산 로직은 그대로)
+# [v1.11.0] 수급 필드명을 investor_ 접두사로 통일
+#   ★ 문제: institution_buy/foreign_buy_qty/individual_buy 이름이 서로 통일이 안 돼있고,
+#     (foreign_buy_qty만 "qty"가 붙어있었음) 게다가 기존 foreign_buy(현재가 API 값)랑
+#     이름이 비슷해서 서로 다른 API에서 온 다른 값이라는 걸 알아채기 어려웠음
+#   ★ 해결: institution_buy → investor_institution_buy / foreign_buy_qty → investor_foreign_buy /
+#     individual_buy → investor_individual_buy 로 리네임. investor_ 접두사가 붙은 건 전부
+#     투자자매매동향(inquire-investor) API에서 온 값이라는 걸 이름만 보고 알 수 있게 함.
+#     (참고: 전부 "수량" 기준이며 금액이 아님)
 # ─────────────────────────────────────────────────────────────────────────────
 
 from __future__ import annotations
@@ -170,12 +178,14 @@ class KisStockSensor(SensorEntity):
             "foreign_rate":  self._data.get("foreign_rate", "0"),
             # ── 수급(외국인/기관/개인) 관련 항목을 한 블록으로 모음 [v1.10.0 정리] ──
             # foreign_buy: 현재가 조회(inquire-price) API에 같이 딸려오는 값 (기존부터 있던 필드)
-            # institution_buy 이하 4개: 투자자매매동향(inquire-investor) API에서 별도 조회한 값
-            # → 소스가 달라서 foreign_buy와 foreign_buy_qty 값이 100% 같지는 않을 수 있음
-            "foreign_buy":      self._data.get("foreign_buy", "0"),
-            "institution_buy":  self._data.get("institution_buy", 0),
-            "foreign_buy_qty":  self._data.get("foreign_buy_qty", 0),
-            "individual_buy":   self._data.get("individual_buy", 0),
+            # investor_* 4개: 투자자매매동향(inquire-investor) API에서 별도 조회한 값
+            # → 소스가 달라서 foreign_buy와 investor_foreign_buy 값이 100% 같지는 않을 수 있음
+            # [v1.11.0] institution_buy/foreign_buy_qty/individual_buy → investor_ 접두사로 리네임
+            #   (foreign_buy와 이름이 비슷해서 서로 다른 API 값인 게 헷갈린다는 피드백 반영)
+            "foreign_buy":                self._data.get("foreign_buy", "0"),
+            "investor_institution_buy":   self._data.get("investor_institution_buy", 0),
+            "investor_foreign_buy":       self._data.get("investor_foreign_buy", 0),
+            "investor_individual_buy":    self._data.get("investor_individual_buy", 0),
             "investor_date":    self._data.get("investor_date", ""),
             # ── 여기까지 수급 블록 ──
             "listed_shares": self._data.get("listed_shares", "0"),
@@ -257,10 +267,11 @@ class KisIndexSensor(SensorEntity):
             "low":          self._data.get("low"),
             "acc_volume":   self._data.get("acc_volume"),
             "acc_amount":   self._data.get("acc_amount"),
-            # v1.9.0: 시장 전체(코스피/코스닥) 기관/외국인/개인 순매수 - pykrx 기반
-            "institution_buy": self._data.get("institution_buy", 0),
-            "foreign_buy_qty":  self._data.get("foreign_buy_qty", 0),
-            "individual_buy":   self._data.get("individual_buy", 0),
-            "investor_date":    self._data.get("investor_date", ""),
+            # v1.9.0: 시장 전체(코스피/코스닥) 기관/외국인/개인 순매수 - KIS REST/pykrx 기반
+            # [v1.11.0] institution_buy/foreign_buy_qty/individual_buy → investor_ 접두사로 리네임
+            "investor_institution_buy": self._data.get("investor_institution_buy", 0),
+            "investor_foreign_buy":     self._data.get("investor_foreign_buy", 0),
+            "investor_individual_buy":  self._data.get("investor_individual_buy", 0),
+            "investor_date":            self._data.get("investor_date", ""),
             "last_updated": datetime.now().isoformat(),
         }

@@ -26,6 +26,10 @@
 #   재검증은 못한 값이라, 혹시 틀렸을 때를 대비해 기존 pykrx 경로를 지우지 않고
 #   "1차 시도: KIS REST → 실패 시 2차 시도: pykrx" 순서로 이중 안전망을 만듦.
 #   원본 응답은 log.debug로 그대로 남겨서, 필드명이 안 맞으면 로그 보고 바로 고칠 수 있게 함.
+# v1.3.1.2: 수급 딕셔너리 키를 institution_buy/foreign_buy_qty/individual_buy →
+#   investor_institution_buy/investor_foreign_buy/investor_individual_buy 로 리네임.
+#   기존 이름이 서로 통일이 안 돼있었고, 기존 foreign_buy(현재가 API 값)와 헷갈린다는
+#   피드백을 반영 (sensor.py 쪽 상세 설명 참고).
 
 import asyncio
 import json
@@ -104,11 +108,21 @@ def parse_ws_message(raw: str) -> dict | None:
         return None
 
 
-def _sync_fetch_market_investor(market: str) -> dict | None:
+def _sync_fetch_market_investor(market: str, retries: int = 3) -> dict | None:
     """v1.4.0 신규 - pykrx로 시장 전체(KOSPI/KOSDAQ) 기관/외국인/개인 순매수 조회
     v1.3.1.1: 원인 파악이 안 되는 "조용한 실패"를 없애기 위해 로그를 촘촘히 추가
       (이전 버전은 df가 비어있을 때 아무 로그도 안 남기고 그냥 None을 반환해서,
        왜 지수 수급이 안 뜨는지 사용자 쪽 로그로는 전혀 알 수 없었음)
+    v1.3.1.3: 재시도(retry) 로직 추가
+      [개요] 사용자 로그로 확인해보니 KIS 서버(openapi.koreainvestment.com)는 정상 응답
+      (404였지만 어쨌든 응답은 옴)하는데, KRX 쪽(data.krx.co.kr)만 유독 빈 응답
+      (JSONDecodeError)이 오는 걸 확인함. 즉 네트워크 자체가 막힌 게 아니라 KRX가
+      가끔/일시적으로 요청을 거부하는(봇 감지, 세션 처리 실패 등) 상황으로 추정됨.
+      pykrx는 undocumented 내부 API를 흉내내는 방식이라 원래 이런 일시적 실패가
+      흔하다고 알려져 있어서, 짧은 대기 후 최대 3회까지 재시도하도록 함.
+      ⚠ 그래도 계속 실패한다면 일시적 문제가 아니라 사용자 네트워크(방화벽/DNS/ISP
+      차단 등)가 data.krx.co.kr 자체를 못 가는 상황일 수 있음 - 이 경우 코드로는
+      해결이 안 되고 네트워크 쪽을 확인해봐야 함.
 
     - 동기(sync) 함수라서 반드시 hass.async_add_executor_job으로 별도 스레드에서 호출할 것
       (asyncio 이벤트 루프 안에서 직접 부르면 다른 sensor 업데이트가 멈춤)
@@ -117,33 +131,40 @@ def _sync_fetch_market_investor(market: str) -> dict | None:
     - 최근 10일치를 조회해서 가장 최근(마지막) 행을 사용 (당일 데이터가 아직 없으면
       직전 영업일 값이 자동으로 잡힘)
     """
-    log.debug(f"[수급] pykrx 조회 시작: market={market}")
     try:
         from pykrx import stock as pykrx_stock  # 지연 import: 설치 전에도 통합 자체는 죽지 않게
     except ImportError as e:
         log.error(f"[수급] pykrx import 실패 (설치가 안 됐거나 버전 문제): {e}")
         return None
 
-    try:
-        today = datetime.now(KST)
-        fromdate = (today - timedelta(days=10)).strftime("%Y%m%d")
-        todate   = today.strftime("%Y%m%d")
-        df = pykrx_stock.get_market_trading_volume_by_date(fromdate, todate, market)
-        if df is None or df.empty:
-            log.warning(f"[수급] pykrx 응답이 비어있음: market={market}, 기간={fromdate}~{todate}")
-            return None
-        last = df.iloc[-1]
-        last_date = df.index[-1]
-        date_str = last_date.strftime("%Y-%m-%d") if hasattr(last_date, "strftime") else str(last_date)
-        return {
-            "institution_buy": int(last.get("기관합계", 0)),
-            "foreign_buy_qty": int(last.get("외국인합계", 0)),
-            "individual_buy":  int(last.get("개인", 0)),
-            "investor_date":   date_str,
-        }
-    except Exception as e:
-        log.error(f"pykrx 시장 수급 조회 실패 [{market}]: {e}")
-        return None
+    today = datetime.now(KST)
+    fromdate = (today - timedelta(days=10)).strftime("%Y%m%d")
+    todate   = today.strftime("%Y%m%d")
+
+    for attempt in range(1, retries + 1):
+        log.debug(f"[수급] pykrx 조회 시도 {attempt}/{retries}: market={market}")
+        try:
+            df = pykrx_stock.get_market_trading_volume_by_date(fromdate, todate, market)
+            if df is None or df.empty:
+                log.warning(f"[수급] pykrx 응답이 비어있음 (시도 {attempt}/{retries}): market={market}, 기간={fromdate}~{todate}")
+            else:
+                last = df.iloc[-1]
+                last_date = df.index[-1]
+                date_str = last_date.strftime("%Y-%m-%d") if hasattr(last_date, "strftime") else str(last_date)
+                return {
+                    "investor_institution_buy": int(last.get("기관합계", 0)),
+                    "investor_foreign_buy": int(last.get("외국인합계", 0)),
+                    "investor_individual_buy":  int(last.get("개인", 0)),
+                    "investor_date":   date_str,
+                }
+        except Exception as e:
+            log.warning(f"[수급] pykrx 조회 오류 (시도 {attempt}/{retries}) market={market}: {e}")
+
+        if attempt < retries:
+            time.sleep(2)  # 동기 함수 안이라 asyncio.sleep이 아니라 time.sleep 사용 (executor 스레드 안이라 안전)
+
+    log.error(f"[수급] pykrx {retries}회 재시도 모두 실패: market={market} — 네트워크(방화벽/DNS)에서 data.krx.co.kr 접근이 막혀있는지 확인 필요")
+    return None
 
 
 class KisRealtimeCoordinator:
@@ -376,10 +397,10 @@ class KisRealtimeCoordinator:
 
                 return {
                     # 기관계 순매수 수량 (요청하신 "기관 순매수" 핵심 필드)
-                    "institution_buy": int(out.get("orgn_ntby_qty", 0) or 0),
+                    "investor_institution_buy": int(out.get("orgn_ntby_qty", 0) or 0),
                     # 외국인/개인 순매수도 같은 응답에 포함되어 있어 함께 저장 (참고용)
-                    "foreign_buy_qty": int(out.get("frgn_ntby_qty", 0) or 0),
-                    "individual_buy":  int(out.get("prsn_ntby_qty", 0) or 0),
+                    "investor_foreign_buy": int(out.get("frgn_ntby_qty", 0) or 0),
+                    "investor_individual_buy":  int(out.get("prsn_ntby_qty", 0) or 0),
                     "investor_date":   out.get("stck_bsop_date", ""),
                 }
         except Exception as e:
@@ -427,9 +448,9 @@ class KisRealtimeCoordinator:
                     return None
 
                 return {
-                    "institution_buy": int(out.get("orgn_ntby_qty", 0) or 0),
-                    "foreign_buy_qty": int(out.get("frgn_ntby_qty", 0) or 0),
-                    "individual_buy":  int(out.get("prsn_ntby_qty", 0) or 0),
+                    "investor_institution_buy": int(out.get("orgn_ntby_qty", 0) or 0),
+                    "investor_foreign_buy": int(out.get("frgn_ntby_qty", 0) or 0),
+                    "investor_individual_buy":  int(out.get("prsn_ntby_qty", 0) or 0),
                     "investor_date":   out.get("stck_bsop_date", ""),
                 }
         except Exception as e:
@@ -452,19 +473,27 @@ class KisRealtimeCoordinator:
             log.error(f"[수급] pykrx 지수 수급 조회 실패 [{code}]: {e}")
             return None
 
-    # ── 지수 수급 통합 진입점: KIS REST 우선, 실패 시 pykrx로 대체 ──── v1.3.1.1
+    # ── 지수 수급 통합 진입점 ──── v1.3.1.3
+    #   [개요] v1.3.1.1에서 KIS REST(FHPDK01010200)를 1차로 시도하도록 만들었는데,
+    #   실제 서버에서 호출해보니 404(그런 endpoint 자체가 없음)로 확인됨 → TR_ID가
+    #   틀린 정보였던 것으로 결론. 매번 404를 받는 호출은 의미가 없어서 우선 순위에서
+    #   제외하고 pykrx만 호출하도록 되돌림. _fetch_index_investor_kis 함수 자체는
+    #   나중에 정확한 TR_ID를 찾으면 바로 다시 켤 수 있도록 지우지 않고 남겨둠
+    #   (아래에서 주석 처리한 코드 참고).
     async def _fetch_index_investor(self, code: str) -> dict | None:
-        result = await self._fetch_index_investor_kis(code)
-        if result:
-            log.debug(f"[수급] 지수 {code}: KIS REST 성공 - {result}")
-            return result
+        # ⚠ FHPDK01010200 / inquire-investor-trend 는 실제 KIS 서버에서 404 확인됨
+        #   (2026-07-18 사용자 로그로 확인). 정확한 TR_ID를 찾기 전까지는 비활성화.
+        # result = await self._fetch_index_investor_kis(code)
+        # if result:
+        #     log.debug(f"[수급] 지수 {code}: KIS REST 성공 - {result}")
+        #     return result
+        # log.debug(f"[수급] 지수 {code}: KIS REST 실패/빈 응답 → pykrx로 재시도")
 
-        log.debug(f"[수급] 지수 {code}: KIS REST 실패/빈 응답 → pykrx로 재시도")
         result = await self._fetch_index_investor_pykrx(code)
         if result:
-            log.debug(f"[수급] 지수 {code}: pykrx 대체 성공 - {result}")
+            log.debug(f"[수급] 지수 {code}: pykrx 성공 - {result}")
         else:
-            log.warning(f"[수급] 지수 {code}: KIS REST, pykrx 둘 다 실패 (당분간 수급 속성이 안 뜰 수 있음)")
+            log.warning(f"[수급] 지수 {code}: pykrx 실패 (당분간 수급 속성이 안 뜰 수 있음)")
         return result
 
     # ── REST: 지수 조회 ──────────────────────────
@@ -562,8 +591,8 @@ class KisRealtimeCoordinator:
                         merged = {**self.data.get(entity_name, {}), **investor}
                         self._notify(entity_name, merged)
                         log.debug(
-                            f"수급 polling: {symbol} 기관 {investor['institution_buy']:,} / "
-                            f"외국인 {investor['foreign_buy_qty']:,} / 개인 {investor['individual_buy']:,}"
+                            f"수급 polling: {symbol} 기관 {investor['investor_institution_buy']:,} / "
+                            f"외국인 {investor['investor_foreign_buy']:,} / 개인 {investor['investor_individual_buy']:,}"
                         )
                     await asyncio.sleep(0.5)
 
@@ -574,8 +603,8 @@ class KisRealtimeCoordinator:
                         merged = {**self.data.get(entity_name, {}), **investor}
                         self._notify(entity_name, merged)
                         log.debug(
-                            f"시장 수급 polling: {code} 기관 {investor['institution_buy']:,} / "
-                            f"외국인 {investor['foreign_buy_qty']:,} / 개인 {investor['individual_buy']:,}"
+                            f"시장 수급 polling: {code} 기관 {investor['investor_institution_buy']:,} / "
+                            f"외국인 {investor['investor_foreign_buy']:,} / 개인 {investor['investor_individual_buy']:,}"
                         )
                     await asyncio.sleep(0.5)
 
