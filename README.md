@@ -4,7 +4,7 @@
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
 [![HA Version](https://img.shields.io/badge/Home%20Assistant-2023.1%2B-blue)](https://www.home-assistant.io/)
-[![Version](https://img.shields.io/badge/Version-1.0.0-green)]()
+[![Version](https://img.shields.io/badge/Version-1.3.1-green)]()
 
 Real-time Korean stock/ETF prices and KOSPI/KOSDAQ index via KIS (Korea Investment & Securities) API as Home Assistant sensors.
 
@@ -21,7 +21,7 @@ Real-time Korean stock/ETF prices and KOSPI/KOSDAQ index via KIS (Korea Investme
 | **Korean name support** | Set sensor display name in Korean |
 | **Rich attributes** | Price, change rate, O/H/L, volume, strength, PER/PBR, foreign ratio, etc. |
 | **Fixed entity ID** | Always `sensor.kis_{code}` regardless of display name |
-| **Supply/demand (institutional net buy) 🆕** | Per-stock institutional / foreign / individual net buy quantity via REST polling |
+| **Supply/demand (institutional net buy) 🆕** | Institutional/foreign/individual net buy for stocks + KOSPI/KOSDAQ market-wide totals via polling |
 
 ---
 
@@ -74,7 +74,7 @@ Real-time Korean stock/ETF prices and KOSPI/KOSDAQ index via KIS (Korea Investme
 | App Secret | App Secret from KIS Developers |
 | Realtime update interval | Minimum WebSocket update interval during market hours (1~60s, default 3s) |
 | Index poll interval | KOSPI/KOSDAQ REST polling interval (10~300s, default 30s) |
-| Supply/demand poll interval 🆕 | Institutional/foreign/individual net buy REST polling interval (20~600s, default 60s) |
+| Supply/demand poll interval 🆕 | Institutional/foreign/individual net buy REST polling interval (20~600s, default 300s/5min) |
 
 ### 2. Add Stock / Index
 
@@ -122,7 +122,10 @@ Integration → KIS 실시간 주식 시세 → **⚙️ Configure**
 
 > ⚠️ **Note on supply/demand data**: `institution_buy` etc. are based on KIS's "Stock Current Price -
 > Investor" API (FHKST01010900). This is a server-aggregated snapshot, not a tick-by-tick real-time
-> value like the trade price, and is refreshed via REST polling (default every 60s), not WebSocket.
+> value like the trade price, and is refreshed via REST polling (default every 300s/5min), not WebSocket.
+> The underlying KRX investor-trend data itself is only refreshed at fixed times during the day
+> (09:30/10:00/11:30/13:20/14:30 provisional, 15:35/18:00 final), so polling much more often than
+> that mostly returns the same repeated value.
 
 ### Index Sensor (`sensor.kis_kospi`, `sensor.kis_kosdaq`)
 
@@ -132,6 +135,15 @@ Integration → KIS 실시간 주식 시세 → **⚙️ Configure**
 | `change` / `change_rate` | Change / Change rate |
 | `open` / `high` / `low` | Open / High / Low |
 | `acc_volume` | Accumulated volume |
+| `institution_buy` 🆕 | Market-wide institutional net buy quantity |
+| `foreign_buy_qty` 🆕 | Market-wide foreign net buy quantity |
+| `individual_buy` 🆕 | Market-wide individual net buy quantity |
+| `investor_date` 🆕 | Reference date for the above |
+
+> ⚠️ **Index supply/demand data comes from a different source**: per-stock supply/demand uses the KIS
+> API, but market-wide (index) supply/demand couldn't be matched to a KIS TR_ID, so it's fetched via
+> **[pykrx](https://github.com/sharebook-kr/pykrx)**, which queries the KRX data system directly —
+> independent of your KIS app key. `pykrx` is added to `manifest.json` and installed automatically by HA.
 
 ---
 
@@ -160,7 +172,7 @@ Integration → KIS 실시간 주식 시세 → **⚙️ Configure**
 - Confirm Open API service is activated
 
 **`institution_buy` is 0 or looks wrong** 🆕
-- Supply/demand polling has up to 60s (default) delay — wait a bit
+- Supply/demand polling has up to 5 minutes (default) delay — wait a bit
 - Check the `수급 polling` debug logs in HA to see if the KIS response shape matches expectations
 - These fields were implemented from community/public docs and haven't been 100% verified against a
   live KIS response — please file an issue if the field names differ

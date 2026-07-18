@@ -7,7 +7,7 @@
 # - HA 재시작 시 자동 복구
 # v1.2.1: options에서 stocks/indexes 읽도록 수정 (data는 초기값 빈 리스트)
 # v1.3.0: 수급(기관 순매수) polling 간격(investor_poll_sec)을 coordinator에 전달하도록 추가
-#   ※ config_flow.py에서 사용자가 설정한 값이 여기를 거치지 않으면 항상 기본값(60초)만 쓰이므로 필수 수정
+#   ※ config_flow.py에서 사용자가 설정한 값이 여기를 거치지 않으면 항상 기본값(300초)만 쓰이므로 필수 수정
 
 from __future__ import annotations
 import logging

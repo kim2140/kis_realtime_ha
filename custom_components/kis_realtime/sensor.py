@@ -18,6 +18,9 @@
 # [v1.8.0] 종목별 기관/외국인/개인 순매수(수급) 속성 추가
 #   coordinator.py의 _run_investor_poll이 institution_buy/foreign_buy_qty/individual_buy/
 #   investor_date를 기존 데이터에 병합해서 넘겨주므로, 여기서는 그 값을 속성으로 노출만 하면 됨.
+# [v1.9.0] 지수(코스피/코스닥) 시장 전체 기관/외국인/개인 순매수 속성 추가
+#   KIS API에는 시장 전체 기준 수급 TR_ID가 확인이 안 돼서, coordinator.py에서
+#   pykrx로 대신 조회한 값을 KisIndexSensor에도 동일한 패턴으로 노출.
 # ─────────────────────────────────────────────────────────────────────────────
 
 from __future__ import annotations
@@ -245,5 +248,10 @@ class KisIndexSensor(SensorEntity):
             "low":          self._data.get("low"),
             "acc_volume":   self._data.get("acc_volume"),
             "acc_amount":   self._data.get("acc_amount"),
+            # v1.9.0: 시장 전체(코스피/코스닥) 기관/외국인/개인 순매수 - pykrx 기반
+            "institution_buy": self._data.get("institution_buy", 0),
+            "foreign_buy_qty":  self._data.get("foreign_buy_qty", 0),
+            "individual_buy":   self._data.get("individual_buy", 0),
+            "investor_date":    self._data.get("investor_date", ""),
             "last_updated": datetime.now().isoformat(),
         }

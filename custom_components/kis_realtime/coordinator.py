@@ -14,6 +14,12 @@
 #   ⚠ 주의: FHKST01010900 TR_ID와 필드명(orgn_ntby_qty 등)은 KIS 공식 문서/커뮤니티 자료
 #   기준으로 확인했지만, 실제 앱키로 살아있는 응답을 직접 테스트하지는 못했음.
 #   처음 실행 시 로그(log.debug)로 실제 응답 구조를 한번 확인해보는 걸 권장.
+# v1.4.0: 코스피/코스닥 "시장 전체" 수급(기관/외국인/개인 순매수) 추가
+#   [개요] KIS에는 시장 전체 기준 투자자매매동향 TR_ID를 못 찾아서, 대신 KRX 데이터를
+#   직접 감싸는 pykrx 라이브러리를 씀. pykrx는 동기(sync) 라이브러리라서 HA의 비동기
+#   이벤트 루프를 막지 않도록 hass.async_add_executor_job으로 별도 스레드에서 실행함.
+#   지수 polling(_run_index_poll)과는 별개로, 종목 수급과 같은 _run_investor_poll
+#   루프 안에서 같이 처리 (업데이트 주기가 어차피 같은 수준이라 태스크를 늘리지 않음).
 
 import asyncio
 import json
@@ -42,6 +48,7 @@ from .const import (
     TR_STOCK_PRICE,
     TR_INDEX_PRICE,
     TR_STOCK_INVESTOR,
+    INDEX_MARKET_MAP,
     SIGN_MAP,
     WS_FIELD_NAMES,
 )
@@ -87,6 +94,43 @@ def parse_ws_message(raw: str) -> dict | None:
             "buy_ratio":   float(d["buy_ratio"]),
         }
     except (ValueError, KeyError):
+        return None
+
+
+def _sync_fetch_market_investor(market: str) -> dict | None:
+    """v1.4.0 신규 - pykrx로 시장 전체(KOSPI/KOSDAQ) 기관/외국인/개인 순매수 조회
+
+    - 동기(sync) 함수라서 반드시 hass.async_add_executor_job으로 별도 스레드에서 호출할 것
+      (asyncio 이벤트 루프 안에서 직접 부르면 다른 sensor 업데이트가 멈춤)
+    - pykrx는 내부적으로 KRX 정보데이터시스템에 OTP 발급→다운로드 방식으로 접근함
+      (KIS 앱키/시크릿과 무관, 별도 인증 없는 공개 데이터)
+    - 최근 10일치를 조회해서 가장 최근(마지막) 행을 사용 (당일 데이터가 아직 없으면
+      직전 영업일 값이 자동으로 잡힘)
+    """
+    try:
+        from pykrx import stock as pykrx_stock  # 지연 import: 설치 전에도 통합 자체는 죽지 않게
+    except ImportError:
+        log.error("pykrx가 설치되지 않았습니다. manifest.json requirements를 확인하세요.")
+        return None
+
+    try:
+        today = datetime.now(KST)
+        fromdate = (today - timedelta(days=10)).strftime("%Y%m%d")
+        todate   = today.strftime("%Y%m%d")
+        df = pykrx_stock.get_market_trading_volume_by_date(fromdate, todate, market)
+        if df is None or df.empty:
+            return None
+        last = df.iloc[-1]
+        last_date = df.index[-1]
+        date_str = last_date.strftime("%Y-%m-%d") if hasattr(last_date, "strftime") else str(last_date)
+        return {
+            "institution_buy": int(last.get("기관합계", 0)),
+            "foreign_buy_qty": int(last.get("외국인합계", 0)),
+            "individual_buy":  int(last.get("개인", 0)),
+            "investor_date":   date_str,
+        }
+    except Exception as e:
+        log.error(f"pykrx 시장 수급 조회 실패 [{market}]: {e}")
         return None
 
 
@@ -330,6 +374,22 @@ class KisRealtimeCoordinator:
             log.error(f"수급(투자자매매동향) 조회 실패 [{symbol}]: {e}")
             return None
 
+    # ── pykrx: 시장 전체(코스피/코스닥) 수급 조회 ──── v1.4.0 신규
+    async def _fetch_index_investor(self, code: str) -> dict | None:
+        """지수 코드(0001/1001)를 KOSPI/KOSDAQ 문자열로 매핑해서 pykrx 조회
+
+        실제 네트워크 호출은 동기 함수(_sync_fetch_market_investor)에서 일어나므로
+        이벤트 루프를 막지 않도록 executor job으로 위임.
+        """
+        market = INDEX_MARKET_MAP.get(code)
+        if not market:
+            return None
+        try:
+            return await self.hass.async_add_executor_job(_sync_fetch_market_investor, market)
+        except Exception as e:
+            log.error(f"지수 수급 조회 실패 [{code}]: {e}")
+            return None
+
     # ── REST: 지수 조회 ──────────────────────────
     async def _fetch_index_price(self, code: str) -> dict | None:
         """FHPUP02100000 - 코스피/코스닥 지수"""
@@ -406,11 +466,13 @@ class KisRealtimeCoordinator:
 
     # ── 수급(기관 순매수) polling 루프 (독립 태스크) ──── v1.3.0 신규
     async def _run_investor_poll(self):
-        """장중/장외 무관하게 주기적으로 종목별 기관/외국인/개인 순매수 조회
+        """장중/장외 무관하게 주기적으로 종목별 + 시장 전체 기관/외국인/개인 순매수 조회
 
         - _index_poll과 동일한 패턴: 별도 태스크로 독립 실행
         - 기존 self.data(가격/체결 정보)를 지우지 않도록, 조회한 수급 값만
           기존 캐시 위에 "병합"해서 _notify 호출 (그냥 덮어쓰면 가격 필드가 사라짐)
+        - v1.4.0: 종목(KIS REST)뿐 아니라 지수(pykrx)도 같은 루프에서 같이 처리.
+          둘 다 "하루 몇 번만 갱신되는 수급 데이터"라 굳이 태스크를 따로 둘 필요가 없음.
         """
         await asyncio.sleep(7)  # 시작 직후 세션/토큰 준비 대기
 
@@ -424,6 +486,18 @@ class KisRealtimeCoordinator:
                         self._notify(entity_name, merged)
                         log.debug(
                             f"수급 polling: {symbol} 기관 {investor['institution_buy']:,} / "
+                            f"외국인 {investor['foreign_buy_qty']:,} / 개인 {investor['individual_buy']:,}"
+                        )
+                    await asyncio.sleep(0.5)
+
+                # v1.4.0: 지수(코스피/코스닥) 시장 전체 수급 - pykrx 기반
+                for code, entity_name in list(self._indexes.items()):
+                    investor = await self._fetch_index_investor(code)
+                    if investor:
+                        merged = {**self.data.get(entity_name, {}), **investor}
+                        self._notify(entity_name, merged)
+                        log.debug(
+                            f"시장 수급 polling: {code} 기관 {investor['institution_buy']:,} / "
                             f"외국인 {investor['foreign_buy_qty']:,} / 개인 {investor['individual_buy']:,}"
                         )
                     await asyncio.sleep(0.5)
