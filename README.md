@@ -4,7 +4,7 @@
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
 [![HA Version](https://img.shields.io/badge/Home%20Assistant-2023.1%2B-blue)](https://www.home-assistant.io/)
-[![Version](https://img.shields.io/badge/Version-1.3.1.3-orange)]()
+[![Version](https://img.shields.io/badge/Version-1.3.2-green)]()
 
 Real-time Korean stock/ETF prices and KOSPI/KOSDAQ index via KIS (Korea Investment & Securities) API as Home Assistant sensors.
 
@@ -141,9 +141,14 @@ Integration → KIS 실시간 주식 시세 → **⚙️ Configure**
 | `investor_date` 🆕 | Reference date for the above |
 
 > ⚠️ **Index supply/demand data comes from a different source**: per-stock supply/demand uses the KIS
-> API, but market-wide (index) supply/demand couldn't be matched to a KIS TR_ID, so it's fetched via
-> **[pykrx](https://github.com/sharebook-kr/pykrx)**, which queries the KRX data system directly —
-> independent of your KIS app key. `pykrx` is added to `manifest.json` and installed automatically by HA.
+> API, but market-wide (index) supply/demand couldn't be matched to a KIS TR_ID. Three fallback tiers
+> are tried in order: (1) KIS REST — currently disabled, see Troubleshooting; (2) scraping Naver
+> Finance's investor-trend page directly; (3) **[pykrx](https://github.com/sharebook-kr/pykrx)**, which
+> queries the KRX data system directly. Both (2) and (3) are independent of your KIS app key.
+> `pandas`/`lxml`/`pykrx` are added to `manifest.json` and installed automatically by HA.
+> ✅ As of v1.3.2, the Naver scraping path (tier 2) has been confirmed working on a live HA instance for
+> both KOSPI and KOSDAQ. A related bug where price polling could wipe out the supply/demand fields right
+> after they were set has also been fixed (see `_notify` in `coordinator.py`).
 
 ---
 

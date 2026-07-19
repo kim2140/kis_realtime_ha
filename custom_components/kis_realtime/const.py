@@ -21,6 +21,26 @@ INDEX_MARKET_MAP = {
     "1001": "KOSDAQ",
 }
 
+# v1.3.1.4: pykrx가 KRX 서버로부터 지속적으로 차단(빈 응답/JSONDecodeError)당하는 문제 확인
+#   (사용자 로그 기준 18시간+/672회 100% 실패) → pykrx보다 먼저 시도할 대체 경로로
+#   네이버 금융의 "투자자별 매매동향" 페이지를 직접 파싱하는 방식 추가.
+#   [출처] pykrx 라이브러리 제작자(sharebook-kr)가 공개한 참고 구현(GitHub Gist)에서
+#   테이블 구조(개인/외국인/기관계 등 컬럼)를 확인. 단, 저(Claude)의 web_fetch 툴이
+#   finance.naver.com 도메인을 차단(blocklist)하고 있어 실제 페이지 응답을 직접
+#   테스트하지는 못했음 — 합성(가짜) HTML로 파싱 로직만 검증한 상태. 실제 페이지
+#   구조가 다르면 아래 파싱 함수가 None을 반환하고 pykrx로 자동 폴백하도록 방어적으로 작성함.
+#   sosok: 코스피=01, 코스닥=02 (일반적으로 알려진 값 - 100% 공식 확인은 아님)
+# v1.3.2: 위 네이버 스크랩 방식, 사용자의 실제 HA 서버(코스피/코스닥)에서 정상 동작 확인됨
+#   (2026-07-19). 별도로 coordinator.py의 _notify 병합 버그도 같이 고쳐져서, 조회된
+#   수급 값이 가격 polling에 지워지지 않고 sensor에 정상 유지되는 것까지 확인 완료.
+#   sosok 매핑도 실기기 응답으로 간접 검증됨 (0001→01 코스피, 1001→02 코스닥 값이
+#   실제 코스피/코스닥과 일치하는 걸 확인).
+NAVER_SOSOK_MAP = {
+    "0001": "01",   # KOSPI
+    "1001": "02",   # KOSDAQ
+}
+NAVER_INVESTOR_URL = "https://finance.naver.com/sise/investorDealTrendDay.naver?bizdate={bizdate}&sosok={sosok}&page=1"
+
 DOMAIN = "kis_realtime"
 
 # 설정 키

@@ -2,7 +2,7 @@
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
 [![HA Version](https://img.shields.io/badge/Home%20Assistant-2023.1%2B-blue)](https://www.home-assistant.io/)
-[![Version](https://img.shields.io/badge/Version-1.3.1.3-orange)]()
+[![Version](https://img.shields.io/badge/Version-1.3.2-green)]()
 
 한국투자증권(KIS) API를 사용하여 국내 주식/ETF 실시간 시세와 코스피/코스닥 지수를 Home Assistant sensor로 제공합니다.
 
@@ -138,9 +138,14 @@
 | `investor_date` 🆕 | 위 수급 데이터 기준일자 |
 
 > ⚠️ **지수 수급 데이터 출처가 다릅니다**: 종목별 수급(`investor_institution_buy` 등)은 KIS API를 쓰지만,
-> 지수(시장 전체) 수급은 KIS에 해당 TR_ID를 찾지 못해서 **[pykrx](https://github.com/sharebook-kr/pykrx)**
-> 라이브러리로 KRX 정보데이터시스템을 직접 조회합니다. KIS 앱키와는 무관한 별도 공개 데이터
-> 소스이며, `manifest.json`에 `pykrx` 의존성이 추가되어 HA가 자동으로 설치합니다.
+> 지수(시장 전체) 수급은 KIS에 해당 TR_ID를 찾지 못했습니다. 아래 순서로 3단계 폴백을 시도합니다:
+> (1) KIS REST — 현재 비활성화 (아래 문제 해결 참고), (2) 네이버 금융 투자자별 매매동향 페이지
+> 직접 스크래핑, (3) **[pykrx](https://github.com/sharebook-kr/pykrx)**로 KRX 정보데이터시스템
+> 직접 조회. (2)/(3) 모두 KIS 앱키와 무관한 별도 공개 데이터 소스입니다. `manifest.json`에
+> `pandas`/`lxml`/`pykrx` 의존성이 추가되어 HA가 자동으로 설치합니다.
+> ✅ v1.3.2 기준, 네이버 스크랩 방식(2단계)은 실제 HA 서버에서 코스피/코스닥 둘 다 정상 동작하는
+> 것까지 확인됐습니다. 조회된 수급 값이 가격 polling 직후 사라지던 관련 버그(`coordinator.py`의
+> `_notify`)도 같이 수정됐습니다.
 
 ---
 

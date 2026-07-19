@@ -30,6 +30,22 @@
 #   investor_institution_buy/investor_foreign_buy/investor_individual_buy 로 리네임.
 #   기존 이름이 서로 통일이 안 돼있었고, 기존 foreign_buy(현재가 API 값)와 헷갈린다는
 #   피드백을 반영 (sensor.py 쪽 상세 설명 참고).
+# v1.3.1.4: pykrx가 KRX 서버로부터 계속 빈 응답/차단을 당하는 문제(100% 실패, 18시간+)가
+#   해결되지 않아서, pykrx보다 먼저 시도할 대체 경로로 네이버 금융 "투자자별 매매동향"
+#   페이지 직접 파싱을 추가함 (_fetch_index_investor_naver / _sync_parse_naver_investor_html).
+#   [개요] 이 방식도 제가(Claude) 직접 네이버 페이지에 접근해서 테스트해보진 못했음
+#   (제 web_fetch 도구가 finance.naver.com을 차단 목록으로 막고 있음) — pykrx 제작자의
+#   공개 참고 구현(GitHub Gist)에서 확인한 테이블 구조를 기준으로 작성했고, 컬럼명이
+#   달라도 최대한 안 죽게 방어적으로 짰음. 우선순위: (비활성)KIS REST → 네이버 스크랩 →
+#   pykrx(최후 폴백). pandas/lxml을 새 의존성으로 manifest.json에 추가함.
+# v1.3.1.5: _notify가 dict를 통째로 덮어써서 수급(investor_*) 필드가 다음 가격 polling에
+#   지워지던 버그 수정 (아래 _notify 함수 주석 참고). 사용자 실기기 테스트로 네이버 스크랩 +
+#   이 버그 수정까지 정상 동작 확인됨.
+# v1.3.2: 위 1.3.1.1~1.3.1.5 테스트 사이클에서 나온 변경사항을 정식 버전으로 확정.
+#   [개요] 사용자가 실제 HA 서버(코스피/코스닥 둘 다)에서 네이버 스크랩 기반 지수 수급이
+#   정상 조회되고, 가격 polling에도 값이 안 지워지고 유지되는 것까지 확인해줌 → 테스트
+#   완료로 판단하고 4자리 테스트 버전 표기를 3자리 정식 버전으로 전환. 기능적으로 1.3.1.5와
+#   동일 (코드 변경 없음, 버전 번호만 정리).
 
 import asyncio
 import json
@@ -60,6 +76,8 @@ from .const import (
     TR_STOCK_INVESTOR,
     TR_INDEX_INVESTOR,
     INDEX_MARKET_MAP,
+    NAVER_SOSOK_MAP,
+    NAVER_INVESTOR_URL,
     SIGN_MAP,
     WS_FIELD_NAMES,
 )
@@ -167,6 +185,89 @@ def _sync_fetch_market_investor(market: str, retries: int = 3) -> dict | None:
     return None
 
 
+def _sync_parse_naver_investor_html(html: str) -> dict | None:
+    """v1.3.1.4 신규 - 네이버 금융 "투자자별 매매동향" 페이지 HTML을 파싱해서
+    시장 전체(코스피/코스닥) 기관계/외국인/개인 순매수 수량을 뽑아냄.
+
+    [왜 이렇게 짰나]
+    pykrx 제작자(sharebook-kr)가 공개한 참고 구현은 pd.read_html(...,
+    skiprows=[0,1,2,8,9,10,16,17])처럼 "몇 번째 줄을 건너뛸지"를 고정된 숫자로
+    지정하는 방식인데, 이건 네이버가 페이지 마크업을 조금만 바꿔도 깨지는
+    취약한 방식이라 판단함. 그래서 skiprows를 쓰는 대신, pd.read_html()로 페이지의
+    모든 테이블을 가져온 뒤 "개인"/"외국인"/"기관계" 컬럼명이 실제로 존재하는
+    테이블을 찾아서 그 컬럼명으로 값을 뽑는 방식으로 바꿈 (컬럼 순서가 바뀌어도
+    안전, 다만 컬럼명 텍스트 자체가 바뀌면 여전히 실패할 수 있음 - 이 경우
+    아래에서 실패 사유를 로그로 남기고 None을 반환해서 pykrx로 자동 폴백됨).
+
+    ⚠ 실제 네이버 페이지에 직접 접근해서 검증하지 못했음 (Claude의 web_fetch 도구가
+    finance.naver.com을 차단 목록으로 막고 있어서). 합성(가짜) HTML로 파싱 로직
+    자체의 동작만 확인한 상태 - 실제 페이지 구조가 다르면 아래 로그를 보고 컬럼명/
+    구조를 다시 맞춰야 할 수 있음.
+
+    - 동기(sync) 함수: pandas.read_html은 CPU 바운드라 hass.async_add_executor_job으로
+      별도 스레드에서 호출해야 함 (이벤트 루프 안에서 직접 부르면 안 됨)
+    """
+    try:
+        import pandas as pd
+    except ImportError as e:
+        log.error(f"[수급] pandas import 실패 (설치가 안 됐거나 버전 문제): {e}")
+        return None
+
+    import io
+
+    try:
+        tables = pd.read_html(io.StringIO(html), thousands=",")
+    except Exception as e:
+        log.warning(f"[수급] 네이버 페이지 테이블 파싱 실패 (read_html): {e}")
+        return None
+
+    if not tables:
+        log.warning("[수급] 네이버 페이지에서 테이블을 하나도 못 찾음 (구조가 예상과 다를 수 있음)")
+        return None
+
+    target = None
+    for t in tables:
+        # colspan 헤더가 있으면 MultiIndex 컬럼이 되므로 마지막 레벨만 사용
+        if isinstance(t.columns, pd.MultiIndex):
+            t.columns = t.columns.get_level_values(-1)
+        cols = [str(c).strip() for c in t.columns]
+        if "개인" in cols and "외국인" in cols and "기관계" in cols:
+            target = t
+            target.columns = cols
+            break
+
+    if target is None:
+        log.warning(
+            "[수급] 네이버 페이지에서 개인/외국인/기관계 컬럼을 가진 테이블을 못 찾음 "
+            "(페이지 구조가 바뀌었을 수 있음 - pykrx로 자동 폴백)"
+        )
+        return None
+
+    # 첫 번째 컬럼을 날짜 컬럼으로 간주 (네이버 표는 보통 첫 칸이 날짜)
+    date_col = target.columns[0]
+
+    def _parse_date(s):
+        return pd.to_datetime(str(s).strip(), format="%y.%m.%d", errors="coerce")
+
+    target["_date"] = target[date_col].apply(_parse_date)
+    valid = target.dropna(subset=["_date"])
+    if valid.empty:
+        log.warning(f"[수급] 네이버 테이블에서 유효한 날짜 행을 못 찾음 (date_col={date_col})")
+        return None
+
+    latest = valid.loc[valid["_date"].idxmax()]
+    try:
+        return {
+            "investor_institution_buy": int(latest["기관계"]),
+            "investor_foreign_buy": int(latest["외국인"]),
+            "investor_individual_buy": int(latest["개인"]),
+            "investor_date": latest["_date"].strftime("%Y%m%d"),
+        }
+    except (ValueError, TypeError) as e:
+        log.warning(f"[수급] 네이버 테이블 값 변환 실패 (숫자가 아닌 값 포함 가능): {e}")
+        return None
+
+
 class KisRealtimeCoordinator:
     """KIS 실시간 시세 데이터 관리 및 HA sensor 콜백"""
 
@@ -213,10 +314,26 @@ class KisRealtimeCoordinator:
             except ValueError:
                 pass
 
+    # v1.3.1.5: _notify가 항상 dict를 "통째로" 덮어쓰던 걸 "기존 캐시 + 새 데이터 병합"으로 변경
+    #   [개요] 지수 수급이 실제로는 정상 조회(네이버 스크랩 성공)되는데도 sensor에는 항상 0으로만
+    #   보이는 원인을 로그로 추적한 결과, 수급 polling(_run_investor_poll, 5분 주기)이 값을 넣어놔도
+    #   그 직후 돌아오는 지수 가격 polling(_run_index_poll, 10~30초 주기)이 가격 필드만 담긴 dict로
+    #   self._notify를 호출하면서 수급 필드가 통째로 사라지는 구조적 버그를 발견함.
+    #   (수급 polling 루프 쪽은 이미 자기 호출부에서 {**기존값, **새값} 병합을 해서 _notify를 부르고
+    #   있었지만, 가격 polling/WebSocket 체결 수신부/_fetch_all_closing 등 다른 호출부들은 병합 없이
+    #   그냥 새 dict를 통째로 넘기고 있었음 — 호출하는 쪽마다 "병합해야 한다"는 걸 기억해야 하는
+    #   구조라 실수하기 쉬웠음)
+    #   그래서 _notify 자체를 "항상 병합"하도록 바꿔서, 앞으로 어떤 곳에서 _notify를 부르든
+    #   실수로 다른 필드를 지우는 일이 구조적으로 없도록 함. (이미 병합해서 넘기던 호출부는
+    #   중복 병합이라 결과가 똑같아서 안전함)
+    #   ⚠ 종목(주식) 쪽도 장중 WebSocket 체결 수신부가 같은 버그를 갖고 있었는데, 장중에만
+    #   발생해서(장외엔 WebSocket이 안 돎) 지금까지 장외 시간에 확인할 땐 우연히 안 드러났던 것으로
+    #   추정됨 — 이번 수정으로 같이 해결됨.
     def _notify(self, entity_name: str, data: dict):
-        self.data[entity_name] = data
+        merged = {**self.data.get(entity_name, {}), **data}
+        self.data[entity_name] = merged
         for cb in self._callbacks.get(entity_name, []):
-            cb(data)
+            cb(merged)
 
     # ── 시작/종료 ────────────────────────────────
     async def async_start(self):
@@ -473,13 +590,53 @@ class KisRealtimeCoordinator:
             log.error(f"[수급] pykrx 지수 수급 조회 실패 [{code}]: {e}")
             return None
 
-    # ── 지수 수급 통합 진입점 ──── v1.3.1.3
+    # ── 네이버 금융: 시장 전체(코스피/코스닥) 수급 조회 ──── v1.3.1.4 신규
+    #   [개요] pykrx가 KRX로부터 지속적으로 차단당해서(100% 실패, 18시간+ 확인), pykrx보다
+    #   먼저 시도할 대체 경로로 추가. KIS 앱키와 무관, 별도 인증 없는 공개 페이지를
+    #   그냥 GET해서 HTML 테이블을 파싱하는 방식이라 KRX 봇 차단과는 다른 경로임.
+    #   실제 파싱은 CPU 바운드(pandas)라 executor job으로 위임.
+    async def _fetch_index_investor_naver(self, code: str) -> dict | None:
+        sosok = NAVER_SOSOK_MAP.get(code)
+        if not sosok:
+            return None
+
+        bizdate = datetime.now(KST).strftime("%Y%m%d")
+        url = NAVER_INVESTOR_URL.format(bizdate=bizdate, sosok=sosok)
+        headers = {
+            # 네이버가 non-browser User-Agent를 다르게 취급할 가능성을 대비해 일반 브라우저처럼 요청
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            ),
+        }
+        try:
+            async with self._session.get(url, headers=headers, ssl=False) as resp:
+                if resp.status != 200:
+                    log.warning(f"[수급] 네이버 지수 수급 페이지 응답 실패 [{code}]: HTTP {resp.status}")
+                    return None
+                html = await resp.text()
+        except Exception as e:
+            log.warning(f"[수급] 네이버 지수 수급 페이지 요청 실패 [{code}]: {e}")
+            return None
+
+        try:
+            result = await self.hass.async_add_executor_job(_sync_parse_naver_investor_html, html)
+        except Exception as e:
+            log.warning(f"[수급] 네이버 지수 수급 파싱 실패 [{code}]: {e}")
+            return None
+
+        if result:
+            log.debug(f"[수급] 지수 {code}: 네이버 스크랩 성공 - {result}")
+        return result
+
+    # ── 지수 수급 통합 진입점 ──── v1.3.1.4
     #   [개요] v1.3.1.1에서 KIS REST(FHPDK01010200)를 1차로 시도하도록 만들었는데,
     #   실제 서버에서 호출해보니 404(그런 endpoint 자체가 없음)로 확인됨 → TR_ID가
     #   틀린 정보였던 것으로 결론. 매번 404를 받는 호출은 의미가 없어서 우선 순위에서
-    #   제외하고 pykrx만 호출하도록 되돌림. _fetch_index_investor_kis 함수 자체는
-    #   나중에 정확한 TR_ID를 찾으면 바로 다시 켤 수 있도록 지우지 않고 남겨둠
-    #   (아래에서 주석 처리한 코드 참고).
+    #   제외함. _fetch_index_investor_kis 함수 자체는 나중에 정확한 TR_ID를 찾으면
+    #   바로 다시 켤 수 있도록 지우지 않고 남겨둠 (아래에서 주석 처리한 코드 참고).
+    #   v1.3.1.4: pykrx가 계속 막혀서, pykrx보다 먼저 네이버 스크랩을 시도하도록 순서 변경.
+    #   우선순위: (비활성)KIS REST → 네이버 스크랩(신규) → pykrx(최후 폴백).
     async def _fetch_index_investor(self, code: str) -> dict | None:
         # ⚠ FHPDK01010200 / inquire-investor-trend 는 실제 KIS 서버에서 404 확인됨
         #   (2026-07-18 사용자 로그로 확인). 정확한 TR_ID를 찾기 전까지는 비활성화.
@@ -487,13 +644,18 @@ class KisRealtimeCoordinator:
         # if result:
         #     log.debug(f"[수급] 지수 {code}: KIS REST 성공 - {result}")
         #     return result
-        # log.debug(f"[수급] 지수 {code}: KIS REST 실패/빈 응답 → pykrx로 재시도")
+        # log.debug(f"[수급] 지수 {code}: KIS REST 실패/빈 응답 → 네이버로 재시도")
+
+        result = await self._fetch_index_investor_naver(code)
+        if result:
+            return result
+        log.debug(f"[수급] 지수 {code}: 네이버 스크랩 실패/빈 응답 → pykrx로 재시도")
 
         result = await self._fetch_index_investor_pykrx(code)
         if result:
             log.debug(f"[수급] 지수 {code}: pykrx 성공 - {result}")
         else:
-            log.warning(f"[수급] 지수 {code}: pykrx 실패 (당분간 수급 속성이 안 뜰 수 있음)")
+            log.warning(f"[수급] 지수 {code}: 네이버·pykrx 둘 다 실패 (당분간 수급 속성이 안 뜰 수 있음)")
         return result
 
     # ── REST: 지수 조회 ──────────────────────────
