@@ -4,7 +4,7 @@
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
 [![HA Version](https://img.shields.io/badge/Home%20Assistant-2023.1%2B-blue)](https://www.home-assistant.io/)
-[![Version](https://img.shields.io/badge/Version-1.3.2-green)]()
+[![Version](https://img.shields.io/badge/Version-1.4.0-green)]()
 
 Real-time Korean stock/ETF prices and KOSPI/KOSDAQ index via KIS (Korea Investment & Securities) API as Home Assistant sensors.
 
@@ -22,6 +22,7 @@ Real-time Korean stock/ETF prices and KOSPI/KOSDAQ index via KIS (Korea Investme
 | **Rich attributes** | Price, change rate, O/H/L, volume, strength, PER/PBR, foreign ratio, etc. |
 | **Fixed entity ID** | Always `sensor.kis_{code}` regardless of display name |
 | **Supply/demand (institutional net buy) 🆕** | Institutional/foreign/individual net buy for stocks + KOSPI/KOSDAQ market-wide totals via polling |
+| **Moving averages (MA) 🆕** | Add SMA sensors for any period you want (e.g. 10/30/60/200 days) on top of any stock or index — multiple periods at once via a comma-separated list |
 
 ---
 
@@ -75,6 +76,7 @@ Real-time Korean stock/ETF prices and KOSPI/KOSDAQ index via KIS (Korea Investme
 | Realtime update interval | Minimum WebSocket update interval during market hours (1~60s, default 3s) |
 | Index poll interval | KOSPI/KOSDAQ REST polling interval (10~300s, default 30s) |
 | Supply/demand poll interval 🆕 | Institutional/foreign/individual net buy REST polling interval (20~600s, default 300s/5min) |
+| MA poll interval 🆕 | Moving average recalculation interval (300~7200s, default 1800s/30min) — daily-close based, doesn't need to be frequent |
 
 ### 2. Add Stock / Index
 
@@ -93,8 +95,14 @@ Integration → KIS 실시간 주식 시세 → **⚙️ Configure**
 2. Choose KOSPI (0001) or KOSDAQ (1001)
 3. Confirm/edit display name → Submit
 
-#### Remove Stock / Index
-1. Select **종목/지수 삭제**
+#### Add Moving Average (MA) 🆕
+1. Select **이동평균선(MA) 추가** (requires at least one stock/index already added)
+2. Choose a target stock or index
+3. Enter desired periods as a comma-separated list, e.g. `10,30,60,200` — no default value, must be typed each time
+4. Submit → one sensor is created per period (duplicates for the same target+period are silently skipped)
+
+#### Remove Stock / Index / MA
+1. Select **종목/지수/MA 삭제**
 2. Check items to remove → Submit → removed immediately
 
 ---
@@ -150,6 +158,36 @@ Integration → KIS 실시간 주식 시세 → **⚙️ Configure**
 > both KOSPI and KOSDAQ. A related bug where price polling could wipe out the supply/demand fields right
 > after they were set has also been fixed (see `_notify` in `coordinator.py`).
 
+### Moving Average Sensor (`sensor.kis_{code}_ma{period}`) 🆕
+
+| Attribute | Description |
+|---|---|
+| `price` (state) | The moving average value itself (KRW for stocks, pt for indices) |
+| `base_code` | Underlying stock code or index code the MA is calculated from |
+| `market_type` | `stock` or `index` |
+| `period` | The period this sensor represents (e.g. `20` for a 20-day MA) |
+| `data_points` | How many days of history were actually used — if lower than `period`, the calculation was skipped that cycle (see below) |
+| `last_calc` | Timestamp of the last successful calculation |
+
+Values are recalculated every `ma_poll_sec` (default 30 min) by `coordinator._run_ma_poll()`, which pulls
+daily closing-price history via KIS's period-price API (`FHKST03010100`, shared by stocks and indices) and
+computes a simple moving average (SMA) locally — neither KIS nor Yahoo Finance provide pre-computed moving
+averages, so this is calculated client-side like any other MA-based indicator.
+
+If `data_points` stays below the requested `period`, the sensor keeps its last known value and a warning is
+logged (`[MA] {entity}: 확보된 데이터(N일)가 요청 기간(M일)보다 적어 계산 스킵`) — this means not enough
+history was retrieved that cycle, not that the value is wrong.
+
+> ⚠️ **Index MA uses a 3-tier fallback, same spirit as index supply/demand**: KIS's period-price endpoint
+> only documents `FID_COND_MRKT_DIV_CODE` values `J` (stock/ETF/ETN) and `W` (ELW) — the `U` code used here
+> for indices is unverified and may not work. If KIS REST returns nothing, the integration falls back to
+> (2) **pykrx** (`get_index_ohlcv`), and if that also fails (e.g. pykrx gets blocked by KRX, which has
+> happened before with the supply/demand feature), to (3) **scraping Naver Finance's
+> `sise_index_day.naver` page** directly, paging through ~10 days per page until enough history is
+> collected. ✅ Confirmed working end-to-end on a live HA instance for KOSPI 200-day MA (via the Naver
+> fallback tier) as of v1.4.0. If it fails for you, check the HA logs for lines starting with `[MA]` —
+> they show exactly which tier failed and why.
+
 ---
 
 ## 🕐 Market Hours
@@ -181,6 +219,14 @@ Integration → KIS 실시간 주식 시세 → **⚙️ Configure**
 - Check the `수급 polling` debug logs in HA to see if the KIS response shape matches expectations
 - These fields were implemented from community/public docs and haven't been 100% verified against a
   live KIS response — please file an issue if the field names differ
+
+**MA sensor shows `Unknown` or is stuck at an old value** 🆕
+- Check HA logs for `[MA]` lines — each fallback tier (KIS REST → pykrx → Naver) logs why it failed
+- `data_points` attribute lower than `period` means not enough history was retrieved that cycle; the
+  sensor keeps its previous value rather than showing a wrong average
+- For index MA specifically, if pykrx is failing (`pykrx 지수 OHLCV ... 실패`), the Naver fallback should
+  kick in automatically — if that also fails, the page structure may have changed; open an issue with the
+  log line
 
 ---
 
