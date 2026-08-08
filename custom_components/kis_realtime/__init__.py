@@ -8,6 +8,10 @@
 # v1.2.1: options에서 stocks/indexes 읽도록 수정 (data는 초기값 빈 리스트)
 # v1.3.0: 수급(기관 순매수) polling 간격(investor_poll_sec)을 coordinator에 전달하도록 추가
 #   ※ config_flow.py에서 사용자가 설정한 값이 여기를 거치지 않으면 항상 기본값(300초)만 쓰이므로 필수 수정
+# v1.5.0: 이동평균선(MA) 설정(moving_averages/ma_poll_sec)을 coordinator에 전달하도록 추가.
+#   options 변경 시 entity registry 정리 대상에도 MA entity를 포함시킴(안 하면 MA를
+#   삭제해도 registry에 죽은 entity가 남는 문제가 생김 - 기존 종목/지수 삭제 로직과 동일 패턴).
+# v1.4.0: 정식 릴리즈 확정 (버전 번호 정리만, 코드 변경 없음)
 
 from __future__ import annotations
 import logging
@@ -19,6 +23,7 @@ from .const import (
     DOMAIN, CONF_APP_KEY, CONF_APP_SECRET, CONF_URL_BASE, CONF_STOCKS, CONF_INDEXES,
     CONF_THROTTLE_SEC, CONF_INDEX_POLL, CONF_INVESTOR_POLL,
     DEFAULT_THROTTLE_SEC, DEFAULT_INDEX_POLL, DEFAULT_INVESTOR_POLL,
+    CONF_MAS, CONF_MA_POLL, DEFAULT_MA_POLL,
 )
 from .coordinator import KisRealtimeCoordinator
 
@@ -42,9 +47,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "url_base":        cfg.get(CONF_URL_BASE),
         "stocks":          cfg.get(CONF_STOCKS, []),
         "indexes":         cfg.get(CONF_INDEXES, []),
+        "moving_averages": cfg.get(CONF_MAS, []),  # v1.5.0
         CONF_THROTTLE_SEC: cfg.get(CONF_THROTTLE_SEC, DEFAULT_THROTTLE_SEC),
         CONF_INDEX_POLL:   cfg.get(CONF_INDEX_POLL,   DEFAULT_INDEX_POLL),
         CONF_INVESTOR_POLL: cfg.get(CONF_INVESTOR_POLL, DEFAULT_INVESTOR_POLL),  # v1.3.0
+        CONF_MA_POLL:      cfg.get(CONF_MA_POLL, DEFAULT_MA_POLL),  # v1.5.0
     })
 
     hass.data[DOMAIN][entry.entry_id] = coordinator
@@ -53,7 +60,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-    log.info(f"KIS 실시간 시세 통합 시작 완료 (종목 {len(cfg.get(CONF_STOCKS,[]))}개 / 지수 {len(cfg.get(CONF_INDEXES,[]))}개)")
+    log.info(
+        f"KIS 실시간 시세 통합 시작 완료 "
+        f"(종목 {len(cfg.get(CONF_STOCKS,[]))}개 / 지수 {len(cfg.get(CONF_INDEXES,[]))}개 / "
+        f"MA {len(cfg.get(CONF_MAS,[]))}개)"
+    )
     return True
 
 
@@ -71,7 +82,8 @@ async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry):
     cfg = {**entry.data, **entry.options}
     active_stocks  = {f"kis_{s['entity']}" for s in cfg.get(CONF_STOCKS, [])}
     active_indexes = {f"kis_{i['entity']}" for i in cfg.get(CONF_INDEXES, [])}
-    active_entities = active_stocks | active_indexes
+    active_mas     = {f"kis_{m['entity']}" for m in cfg.get(CONF_MAS, [])}  # v1.5.0
+    active_entities = active_stocks | active_indexes | active_mas
 
     # entity registry에서 삭제된 sensor 제거
     ent_reg = er.async_get(hass)

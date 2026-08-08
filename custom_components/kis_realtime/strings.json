@@ -38,7 +38,8 @@
         "title": "업데이트 간격 조정",
         "data": {
           "throttle_sec": "실시간 시세 업데이트 간격 (초) - 장중 WebSocket 종목당 최소 간격",
-          "index_poll_sec": "지수 조회 간격 (초) - 코스피/코스닥 REST API 조회 주기"
+          "index_poll_sec": "지수 조회 간격 (초) - 코스피/코스닥 REST API 조회 주기",
+          "ma_poll_sec": "MA(이동평균) 재계산 간격 (초) - 일봉 기반이라 자주 갱신할 필요 없음"
         }
       },
       "add_stock_code": {
@@ -75,10 +76,20 @@
         "data": {
           "friendly_name": "표시 이름 (한글 가능)"
         }
+      },
+      "add_ma": {
+        "title": "이동평균선(MA) 추가",
+        "description": "{example}",
+        "data": {
+          "target": "대상 종목/지수",
+          "periods": "기간 (일, 콤마로 구분해 여러 개 가능)"
+        }
       }
     },
     "error": {
-      "already_exists": "이미 등록된 종목/지수입니다."
+      "already_exists": "이미 등록된 종목/지수입니다.",
+      "invalid_periods": "기간을 콤마로 구분된 숫자로 입력해주세요 (예: 10,30,60,200).",
+      "period_out_of_range": "각 기간은 2~480 사이 숫자여야 합니다."
     }
   }
 }

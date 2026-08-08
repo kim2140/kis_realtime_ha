@@ -13,6 +13,14 @@
 #   - 지수는 기존 유지: sensor.kis_kospi / sensor.kis_kosdaq
 # [v1.8.0] 수급(기관 순매수) polling 간격 설정 슬라이더 추가
 #   - 기존 종목/지수 간격 설정 화면에 investor_poll_sec 슬라이더만 추가 (구조는 그대로)
+# [v1.5.0] 이동평균선(MA) 추가 메뉴 신설
+#   - 메인 메뉴에 "이동평균선(MA) 추가" 항목 추가. 기존에 등록된 종목/지수 중 하나를
+#     고르고, 원하는 기간을 콤마로 구분해 입력하면(예: "10,30,60,200") 한 번에 여러
+#     MA 센서가 생성됨. 삭제 메뉴에도 MA 항목이 같이 뜨도록 통합.
+# [v1.5.2] MA 추가 화면의 periods 입력란 기본값 제거
+#   - "10,20,60,200"이 미리 채워져 있으면 안 건드리고 그대로 제출할 위험이 있어서
+#     기본값 없이 빈 칸으로 시작하도록 변경 - Required라 빈 채로는 제출 자체가 안 됨.
+# [v1.4.0] 정식 릴리즈 확정 (버전 번호 정리만, 코드 변경 없음)
 # ─────────────────────────────────────────────────────────────────────────────
 
 import voluptuous as vol
@@ -26,11 +34,14 @@ from .const import (
     CONF_APP_KEY, CONF_APP_SECRET, CONF_URL_BASE,
     CONF_STOCKS, CONF_INDEXES,
     CONF_THROTTLE_SEC, CONF_INDEX_POLL, CONF_INVESTOR_POLL,
+    CONF_MAS, CONF_MA_POLL,
     KIS_REST_BASE_DEFAULT,
-    DEFAULT_THROTTLE_SEC, DEFAULT_INDEX_POLL, DEFAULT_INVESTOR_POLL,
+    DEFAULT_THROTTLE_SEC, DEFAULT_INDEX_POLL, DEFAULT_INVESTOR_POLL, DEFAULT_MA_POLL,
     MIN_THROTTLE_SEC, MAX_THROTTLE_SEC,
     MIN_INDEX_POLL, MAX_INDEX_POLL,
     MIN_INVESTOR_POLL, MAX_INVESTOR_POLL,
+    MIN_MA_POLL, MAX_MA_POLL,
+    MA_MIN_PERIOD, MA_MAX_PERIOD,
 )
 
 
@@ -159,9 +170,11 @@ class KisRealtimeOptionsFlow(config_entries.OptionsFlow):
         opts = config_entry.options if config_entry.options else config_entry.data
         self._stocks   = list(opts.get(CONF_STOCKS, []))
         self._indexes  = list(opts.get(CONF_INDEXES, []))
+        self._mas      = list(opts.get(CONF_MAS, []))  # v1.5.0
         self._throttle = opts.get(CONF_THROTTLE_SEC, DEFAULT_THROTTLE_SEC)
         self._poll     = opts.get(CONF_INDEX_POLL, DEFAULT_INDEX_POLL)
         self._investor_poll = opts.get(CONF_INVESTOR_POLL, DEFAULT_INVESTOR_POLL)  # v1.8.0
+        self._ma_poll  = opts.get(CONF_MA_POLL, DEFAULT_MA_POLL)  # v1.5.0
         self._pending_code     = ""
         self._pending_entity   = ""
         self._pending_friendly = ""
@@ -172,9 +185,11 @@ class KisRealtimeOptionsFlow(config_entries.OptionsFlow):
             **self._entry.data,
             CONF_STOCKS:       self._stocks,
             CONF_INDEXES:      self._indexes,
+            CONF_MAS:          self._mas,  # v1.5.0
             CONF_THROTTLE_SEC: int(self._throttle),
             CONF_INDEX_POLL:   int(self._poll),
             CONF_INVESTOR_POLL: int(self._investor_poll),  # v1.8.0
+            CONF_MA_POLL:      int(self._ma_poll),  # v1.5.0
         })
 
     async def async_step_init(self, user_input=None):
@@ -186,6 +201,7 @@ class KisRealtimeOptionsFlow(config_entries.OptionsFlow):
             action = user_input.get("action")
             if action == "add_stock":  return await self.async_step_add_stock_code()
             if action == "add_index":  return await self.async_step_add_index()
+            if action == "add_ma":     return await self.async_step_add_ma()  # v1.5.0
             if action == "remove":     return await self.async_step_remove()
             if action == "interval":   return await self.async_step_interval()
             return self._save()
@@ -193,6 +209,7 @@ class KisRealtimeOptionsFlow(config_entries.OptionsFlow):
         # 현재 등록 목록 표시 (sensor ID 형태로)
         stock_list = ", ".join(f"sensor.kis_{s['entity']}" for s in self._stocks) or "없음"
         index_list = ", ".join(f"sensor.kis_{i['entity']}" for i in self._indexes) or "없음"
+        ma_list    = ", ".join(f"sensor.kis_{m['entity']}" for m in self._mas) or "없음"  # v1.5.0
 
         return self.async_show_form(
             step_id="menu",
@@ -201,13 +218,14 @@ class KisRealtimeOptionsFlow(config_entries.OptionsFlow):
                     selector.SelectSelectorConfig(options=[
                         {"value": "add_stock", "label": "종목 추가 (ETF/개별주)"},
                         {"value": "add_index", "label": "지수 추가 (코스피/코스닥)"},
-                        {"value": "remove",    "label": "종목/지수 삭제"},
-                        {"value": "interval",  "label": f"업데이트 간격 조정 (종목 {int(self._throttle)}초 / 지수 {int(self._poll)}초 / 수급 {int(self._investor_poll)}초)"},
+                        {"value": "add_ma",    "label": "이동평균선(MA) 추가"},  # v1.5.0
+                        {"value": "remove",    "label": "종목/지수/MA 삭제"},
+                        {"value": "interval",  "label": f"업데이트 간격 조정 (종목 {int(self._throttle)}초 / 지수 {int(self._poll)}초 / 수급 {int(self._investor_poll)}초 / MA {int(self._ma_poll)}초)"},
                         {"value": "save",      "label": "저장"},
                     ], mode="list")
                 ),
             }),
-            description_placeholders={"stocks": stock_list, "indexes": index_list},
+            description_placeholders={"stocks": stock_list, "indexes": index_list, "mas": ma_list},
         )
 
     async def async_step_add_stock_code(self, user_input=None):
@@ -256,6 +274,82 @@ class KisRealtimeOptionsFlow(config_entries.OptionsFlow):
                 "code":   self._pending_code,
                 "entity": self._pending_entity,
                 "sensor": f"sensor.kis_{self._pending_entity}",  # 예: sensor.kis_329200
+            },
+        )
+
+    async def async_step_add_ma(self, user_input=None):
+        """v1.5.0 신규 - 이동평균선(MA) 추가: 대상(종목/지수) 선택 + 원하는
+        기간을 콤마로 구분해 한 번에 여러 개 추가 가능 (예: "10,30,60,200").
+        기간 개수 제한은 없음 - 원하는 만큼 자유롭게 입력.
+        """
+        targets = (
+            [{"value": f"stock:{s['code']}", "label": f"{s.get('friendly_name') or s['entity']} ({s['code']})"} for s in self._stocks] +
+            [{"value": f"index:{i['code']}", "label": f"{i.get('friendly_name') or i['entity']} ({i['code']})"} for i in self._indexes]
+        )
+        if not targets:
+            # 종목/지수를 먼저 하나 이상 추가해야 MA를 걸 수 있음
+            return await self.async_step_menu()
+
+        errors = {}
+        if user_input is not None:
+            market_type, code = user_input["target"].split(":", 1)
+            periods_raw = user_input["periods"]
+
+            periods: list[int] = []
+            parse_ok = True
+            for token in periods_raw.split(","):
+                token = token.strip()
+                if not token:
+                    continue
+                try:
+                    periods.append(int(token))
+                except ValueError:
+                    parse_ok = False
+                    break
+
+            out_of_range = [p for p in periods if not (MA_MIN_PERIOD <= p <= MA_MAX_PERIOD)]
+
+            if not parse_ok or not periods:
+                errors["periods"] = "invalid_periods"
+            elif out_of_range:
+                errors["periods"] = "period_out_of_range"
+            else:
+                target_list = self._stocks if market_type == "stock" else self._indexes
+                target_meta = next((t for t in target_list if t["code"] == code), None)
+                base_name = (target_meta.get("friendly_name") or code) if target_meta else code
+
+                added = 0
+                for period in sorted(set(periods)):
+                    entity = f"{code}_ma{period}"
+                    if any(m["entity"] == entity for m in self._mas):
+                        continue  # 이미 있는 조합은 조용히 건너뜀
+                    self._mas.append({
+                        "code":          code,
+                        "market_type":   market_type,
+                        "period":        period,
+                        "entity":        entity,
+                        "friendly_name": f"{base_name} {period}일선",
+                    })
+                    added += 1
+
+                if added == 0:
+                    errors["periods"] = "already_exists"
+                else:
+                    return await self.async_step_menu()
+
+        return self.async_show_form(
+            step_id="add_ma",
+            data_schema=vol.Schema({
+                vol.Required("target"): selector.SelectSelector(
+                    selector.SelectSelectorConfig(options=targets, mode="list")),
+                # v1.5.2: 기본값(default)을 없앰 - "10,20,60,200"이 미리 채워져 있으면
+                # 사용자가 직접 안 건드리고 실수로 그대로 제출할 위험이 있었음.
+                # Required라 빈 채로는 제출 자체가 안 되니, 매번 직접 입력해야만 넘어감.
+                vol.Required("periods"): str,
+            }),
+            errors=errors,
+            description_placeholders={
+                "example": f"예) 10,30,60,200 (콤마로 구분, 각 {MA_MIN_PERIOD}~{MA_MAX_PERIOD} 사이 원하는 만큼)"
             },
         )
 
@@ -322,6 +416,7 @@ class KisRealtimeOptionsFlow(config_entries.OptionsFlow):
             self._throttle = user_input[CONF_THROTTLE_SEC]
             self._poll     = user_input[CONF_INDEX_POLL]
             self._investor_poll = user_input[CONF_INVESTOR_POLL]  # v1.8.0
+            self._ma_poll  = user_input[CONF_MA_POLL]  # v1.5.0
             return await self.async_step_menu()
 
         return self.async_show_form(
@@ -337,14 +432,19 @@ class KisRealtimeOptionsFlow(config_entries.OptionsFlow):
                 vol.Optional(CONF_INVESTOR_POLL, default=int(self._investor_poll)):
                     selector.NumberSelector(selector.NumberSelectorConfig(
                         min=MIN_INVESTOR_POLL, max=MAX_INVESTOR_POLL, step=10, mode="slider")),
+                # v1.5.0: 이동평균(MA) 재계산 간격
+                vol.Optional(CONF_MA_POLL, default=int(self._ma_poll)):
+                    selector.NumberSelector(selector.NumberSelectorConfig(
+                        min=MIN_MA_POLL, max=MAX_MA_POLL, step=60, mode="slider")),
             }),
         )
 
     async def async_step_remove(self, user_input=None):
-        """종목/지수 삭제: 체크박스로 복수 선택 후 즉시 저장"""
+        """종목/지수/MA 삭제: 체크박스로 복수 선택 후 즉시 저장"""
         all_items = (
             [{"value": f"stock:{s['code']}:{s['entity']}", "label": f"{s.get('friendly_name', s['entity'])} (sensor.kis_{s['entity']})"} for s in self._stocks] +
-            [{"value": f"index:{i['code']}:{i['entity']}", "label": f"{i.get('friendly_name', i['entity'])} (sensor.kis_{i['entity']})"} for i in self._indexes]
+            [{"value": f"index:{i['code']}:{i['entity']}", "label": f"{i.get('friendly_name', i['entity'])} (sensor.kis_{i['entity']})"} for i in self._indexes] +
+            [{"value": f"ma:{m['entity']}", "label": f"{m.get('friendly_name', m['entity'])} (sensor.kis_{m['entity']})"} for m in self._mas]  # v1.5.0
         )
         if not all_items:
             return await self.async_step_menu()
@@ -353,6 +453,7 @@ class KisRealtimeOptionsFlow(config_entries.OptionsFlow):
             to_remove = user_input.get("items", [])
             self._stocks  = [s for s in self._stocks  if f"stock:{s['code']}:{s['entity']}" not in to_remove]
             self._indexes = [i for i in self._indexes if f"index:{i['code']}:{i['entity']}" not in to_remove]
+            self._mas     = [m for m in self._mas     if f"ma:{m['entity']}" not in to_remove]  # v1.5.0
             # 삭제 즉시 저장 → __init__.py의 _async_update_listener가 entity registry 정리
             return self._save()
 

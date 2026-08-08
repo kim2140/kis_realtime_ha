@@ -46,6 +46,39 @@
 #   정상 조회되고, 가격 polling에도 값이 안 지워지고 유지되는 것까지 확인해줌 → 테스트
 #   완료로 판단하고 4자리 테스트 버전 표기를 3자리 정식 버전으로 전환. 기능적으로 1.3.1.5와
 #   동일 (코드 변경 없음, 버전 번호만 정리).
+# v1.5.0: 이동평균선(MA) 센서 추가
+#   [개요] FHKST03010100(국내주식기간별시세, 종목/지수 공용)로 일별 종가 히스토리를
+#   받아와 사용자가 지정한 기간(예: 10일/30일/200일, 자유 입력)의 단순이동평균(SMA)을
+#   직접 계산 - _fetch_period_closes()/_run_ma_poll() 신규. 같은 종목/지수에 여러
+#   기간이 설정돼 있으면 히스토리 조회를 한 번만 재사용해서 API 호출을 아낌.
+#   ⚠ 지수(코스피/코스닥) 조회 시 FID_COND_MRKT_DIV_CODE="U" 사용은 공식 문서로
+#   100% 검증 못한 값 - 기존 수급 API들과 동일하게 log.debug로 원본 응답을 남겨둠.
+# v1.5.1: 지수 MA에 pykrx 폴백 추가
+#   [개요] inquire-daily-itemchartprice의 공식 문서상 FID_COND_MRKT_DIV_CODE는
+#   "J"(주식/ETF/ETN)와 "W"(ELW)만 확인되고 "U"(지수)는 검증되지 않음 - 이
+#   엔드포인트가 지수 자체를 지원 안 할 가능성이 실제로 있음. KIS REST로 지수
+#   히스토리를 하나도 못 받으면(collected 비어있음) pykrx.get_index_ohlcv()로
+#   자동 폴백하도록 _sync_fetch_index_ohlcv_closes() 신규 추가 - 기존 수급 조회의
+#   "KIS 우선 → 실패 시 pykrx" 이중 안전망과 동일한 패턴. pykrx의 지수 코드 체계가
+#   KIS 자체 코드(0001/1001)와 달라서(커뮤니티 예제 기준 1001=코스피/2001=코스닥)
+#   const.py에 별도 매핑(PYKRX_INDEX_OHLCV_CODE) 추가.
+# v1.5.3: 지수 MA 3차 폴백(네이버 금융) 추가
+#   [개요] 실사용 로그로 pykrx 폴백까지 KeyError('지수명')로 실패하는 게 확인됨
+#   (수급 조회 때 pykrx가 KRX로부터 장시간 차단당했던 것과 같은 유형의 문제로
+#   추정). KIS REST → pykrx 둘 다 실패하면, 수급 조회에서 이미 실전 검증된 것과
+#   같은 소스(네이버 금융 "코스피/코스닥 일별시세" 페이지)로 마지막 폴백하도록
+#   _fetch_index_history_naver()/_sync_parse_naver_index_day_html() 신규 추가.
+#   한 페이지에 약 10일치만 나와서 여러 페이지를 순회하며 모음.
+# v1.5.4: 네이버 지수 히스토리 폴백이 실전에서 200일 요청에 150일만 모으고
+#   멈추는 문제 확인(로그로 실측). "새 날짜 0개인 페이지 1번"만 나와도 바로
+#   중단하던 조기종료 조건이 너무 성급했던 것으로 추정 - 연속 3번 "새 데이터
+#   없음"이 나와야 진짜 종료로 판단하도록 완화, 페이지 상한도 늘림.
+# v1.4.0: 위 v1.5.0~v1.5.4 개발/테스트 사이클을 정식 릴리즈로 확정.
+#   [개요] 사용자 실제 HA 서버에서 종목 MA(삼성전자 20일선 등)뿐 아니라 지수
+#   MA(코스피 200일선, 3단계 폴백 중 네이버 경로)까지 정상 조회되는 것을
+#   최종 확인함. v1.3.2와 동일한 패턴으로 4자리 개발 버전(1.5.x)을 3자리
+#   정식 버전으로 정리 - MA는 버그수정이 아닌 신규 기능이라 1.3.2 → 1.4.0으로
+#   minor 버전을 올림. 코드 변경 없음, 버전 번호 정리만.
 
 import asyncio
 import json
@@ -65,9 +98,11 @@ from .const import (
     DEFAULT_THROTTLE_SEC,
     DEFAULT_INDEX_POLL,
     DEFAULT_INVESTOR_POLL,
+    DEFAULT_MA_POLL,
     CONF_THROTTLE_SEC,
     CONF_INDEX_POLL,
     CONF_INVESTOR_POLL,
+    CONF_MA_POLL,
     MARKET_OPEN_H, MARKET_OPEN_M,
     MARKET_CLOSE_H, MARKET_CLOSE_M,
     TR_STOCK_CONTRACT,
@@ -75,9 +110,13 @@ from .const import (
     TR_INDEX_PRICE,
     TR_STOCK_INVESTOR,
     TR_INDEX_INVESTOR,
+    TR_PERIOD_PRICE,
+    MA_MARKET_DIV,
+    PYKRX_INDEX_OHLCV_CODE,
     INDEX_MARKET_MAP,
     NAVER_SOSOK_MAP,
     NAVER_INVESTOR_URL,
+    NAVER_INDEX_DAY_URL,
     SIGN_MAP,
     WS_FIELD_NAMES,
 )
@@ -268,6 +307,116 @@ def _sync_parse_naver_investor_html(html: str) -> dict | None:
         return None
 
 
+def _sync_fetch_index_ohlcv_closes(pykrx_code: str, fromdate: str, todate: str, retries: int = 3) -> list[float] | None:
+    """v1.5.1 신규 - pykrx.get_index_ohlcv()로 지수(코스피/코스닥) 일별 종가 히스토리
+    조회. MA 계산용 KIS REST 폴백(지수는 U 코드가 미검증이라 실패할 가능성이 있음).
+
+    - 동기(sync) 함수라서 반드시 hass.async_add_executor_job으로 별도 스레드에서 호출할 것
+      (기존 _sync_fetch_market_investor와 동일한 이유/패턴)
+    - pykrx_code는 KIS 자체 지수코드(0001/1001)가 아니라 PYKRX_INDEX_OHLCV_CODE로
+      변환된 값이어야 함(호출부에서 변환해서 넘겨줌)
+    """
+    try:
+        from pykrx import stock as pykrx_stock
+    except ImportError as e:
+        log.error(f"[MA] pykrx import 실패 (설치가 안 됐거나 버전 문제): {e}")
+        return None
+
+    for attempt in range(1, retries + 1):
+        log.debug(f"[MA] pykrx 지수 OHLCV 조회 시도 {attempt}/{retries}: code={pykrx_code}, {fromdate}~{todate}")
+        try:
+            df = pykrx_stock.get_index_ohlcv(fromdate, todate, pykrx_code)
+            if df is None or df.empty:
+                log.warning(f"[MA] pykrx 지수 OHLCV 응답이 비어있음 (시도 {attempt}/{retries}): code={pykrx_code}")
+            else:
+                col = "종가" if "종가" in df.columns else None
+                if col is None:
+                    log.error(f"[MA] pykrx 지수 OHLCV 응답에 '종가' 컬럼이 없음: 실제 컬럼={list(df.columns)}")
+                    return None
+                closes = [float(v) for v in df[col].tolist() if v]
+                return closes if closes else None
+        except Exception as e:
+            log.warning(f"[MA] pykrx 지수 OHLCV 조회 오류 (시도 {attempt}/{retries}) code={pykrx_code}: {e}")
+
+        if attempt < retries:
+            time.sleep(2)
+
+    log.error(f"[MA] pykrx 지수 OHLCV {retries}회 재시도 모두 실패: code={pykrx_code}")
+    return None
+
+
+def _sync_parse_naver_index_day_html(html: str) -> dict | None:
+    """v1.5.3 신규 - 네이버 금융 "코스피/코스닥 일별시세" 페이지 HTML을 파싱해서
+    {날짜문자열(YYYYMMDD): 종가} 딕셔너리로 반환(한 페이지 = 약 10일치).
+    MA 계산용 3차 폴백(KIS REST → pykrx 둘 다 실패했을 때의 최후 경로).
+
+    [설계] 기존 수급 파싱(_sync_parse_naver_investor_html)과 동일하게, 고정된
+    컬럼 위치/skiprows에 의존하지 않고 "날짜"/"체결가"(또는 "종가") 컬럼명이
+    실제로 존재하는 테이블을 찾아서 그 컬럼명으로 값을 뽑는 방식 - 페이지
+    마크업이 조금 바뀌어도 안전.
+
+    ⚠ 수급 파싱과 마찬가지로 실제 네이버 페이지에 직접 접근해서 검증하지
+    못했음(web_fetch 도구가 finance.naver.com을 차단 목록으로 막고 있음).
+    합성 HTML로 파싱 로직 자체의 동작만 확인한 상태 - 실제 페이지 구조가
+    다르면 아래 경고 로그를 보고 컬럼명을 다시 맞춰야 할 수 있음.
+
+    - 동기(sync) 함수: pandas.read_html은 CPU 바운드라 hass.async_add_executor_job으로
+      별도 스레드에서 호출해야 함
+    """
+    try:
+        import pandas as pd
+    except ImportError as e:
+        log.error(f"[MA] pandas import 실패 (설치가 안 됐거나 버전 문제): {e}")
+        return None
+
+    import io
+
+    try:
+        tables = pd.read_html(io.StringIO(html), thousands=",")
+    except Exception as e:
+        log.warning(f"[MA] 네이버 지수 일별시세 테이블 파싱 실패 (read_html): {e}")
+        return None
+
+    if not tables:
+        log.warning("[MA] 네이버 지수 일별시세 페이지에서 테이블을 하나도 못 찾음 (구조가 예상과 다를 수 있음)")
+        return None
+
+    target = None
+    close_col = None
+    date_col = None
+    for t in tables:
+        if isinstance(t.columns, pd.MultiIndex):
+            t.columns = t.columns.get_level_values(-1)
+        cols = [str(c).strip() for c in t.columns]
+        cand_close = "체결가" if "체결가" in cols else ("종가" if "종가" in cols else None)
+        cand_date = "날짜" if "날짜" in cols else None
+        if cand_close and cand_date:
+            target = t
+            target.columns = cols
+            close_col, date_col = cand_close, cand_date
+            break
+
+    if target is None:
+        log.warning("[MA] 네이버 지수 일별시세 - '날짜'/'체결가(종가)' 컬럼을 가진 테이블을 못 찾음")
+        return None
+
+    result: dict[str, float] = {}
+    for _, row in target.iterrows():
+        raw_date = str(row.get(date_col, "")).strip()
+        raw_close = row.get(close_col, None)
+        if not raw_date or raw_date == "nan" or pd.isna(raw_close):
+            continue
+        norm_date = raw_date.replace(".", "").replace("-", "").strip()  # "2026.08.07" -> "20260807"
+        if len(norm_date) != 8 or not norm_date.isdigit():
+            continue
+        try:
+            result[norm_date] = float(raw_close)
+        except (ValueError, TypeError):
+            continue
+
+    return result if result else None
+
+
 class KisRealtimeCoordinator:
     """KIS 실시간 시세 데이터 관리 및 HA sensor 콜백"""
 
@@ -278,11 +427,17 @@ class KisRealtimeCoordinator:
         self._url_base   = config.get("url_base", KIS_REST_BASE_DEFAULT)
         self._stocks     = {s["code"]: s["entity"] for s in config.get("stocks", [])}
         self._indexes    = {i["code"]: i["entity"] for i in config.get("indexes", [])}
+        # v1.5.0: MA(이동평균) 설정 - entity_name → {code, market_type, period}
+        self._mas = {
+            m["entity"]: {"code": m["code"], "market_type": m["market_type"], "period": m["period"]}
+            for m in config.get("moving_averages", [])
+        }
 
         # 업데이트 간격 (UI에서 설정 가능)
         self._throttle_sec = config.get(CONF_THROTTLE_SEC, DEFAULT_THROTTLE_SEC)
         self._index_poll   = config.get(CONF_INDEX_POLL,   DEFAULT_INDEX_POLL)
         self._investor_poll = config.get(CONF_INVESTOR_POLL, DEFAULT_INVESTOR_POLL)  # v1.3.0
+        self._ma_poll       = config.get(CONF_MA_POLL, DEFAULT_MA_POLL)  # v1.5.0
 
         # KIS access token 자체 발급 및 캐시
         # App Key/Secret으로 직접 발급 → kis_token_cache.json 불필요
@@ -298,6 +453,7 @@ class KisRealtimeCoordinator:
         self._task         = None
         self._index_task   = None  # v1.0.0: 지수 polling 전용 태스크
         self._investor_task = None  # v1.3.0: 수급(기관 순매수) polling 전용 태스크
+        self._ma_task       = None  # v1.5.0: 이동평균(MA) 계산 전용 태스크
         self._session: aiohttp.ClientSession | None = None
 
     # ── 콜백 등록/해제 ──────────────────────────
@@ -343,6 +499,8 @@ class KisRealtimeCoordinator:
         self._index_task = asyncio.create_task(self._run_index_poll())
         # v1.3.0: 수급(기관 순매수) polling 전용 태스크
         self._investor_task = asyncio.create_task(self._run_investor_poll())
+        # v1.5.0: 이동평균(MA) 계산 전용 태스크
+        self._ma_task = asyncio.create_task(self._run_ma_poll())
 
     async def async_stop(self):
         if self._task:
@@ -351,6 +509,8 @@ class KisRealtimeCoordinator:
             self._index_task.cancel()
         if self._investor_task:  # v1.3.0
             self._investor_task.cancel()
+        if self._ma_task:  # v1.5.0
+            self._ma_task.cancel()
         if self._session:
             await self._session.close()
 
@@ -696,6 +856,225 @@ class KisRealtimeCoordinator:
         except Exception as e:
             log.error(f"지수 조회 실패 [{code}]: {e}")
             return None
+
+    # ── REST: 기간별 종가 히스토리 조회 (MA 계산용) ──── v1.5.0 신규
+    async def _fetch_period_closes(self, code: str, market_type: str, need_days: int) -> list[float] | None:
+        """FHKST03010100 - 국내주식기간별시세(일/주/월/년)로 일별 종가를
+        need_days(영업일)만큼 모아서, 오래된 날짜 → 최신 날짜 순으로 반환.
+
+        [설계 이유] 이 API가 한 번 호출로 몇 건까지 돌려주는지 공식 문서로
+        확정하지 못했음(커뮤니티 자료 기준으로는 제한이 있는 걸로 보임 -
+        기존 수급 API들과 같은 수준의 미검증 상태). 그래서 FK100/NK100 같은
+        페이지네이션 토큰의 정확한 응답 필드명에 기대는 대신, 날짜 구간
+        (FID_INPUT_DATE_1/2)을 뒤로 옮겨가며 여러 번 호출해서 이어붙이는
+        더 단순하고 실패에 안전한 방식을 택함 - 필요한 만큼 모이면 중단.
+
+        ⚠ 지수(코스피/코스닥)는 market_type="index" → FID_COND_MRKT_DIV_CODE="U"로
+        같은 엔드포인트를 씀 - 이 부분은 공식 문서로 100% 검증 못함(아래 로그로
+        원본 응답을 남기니, 값이 이상하면 로그를 보고 확인 필요).
+        """
+        access_token = await self._get_access_token()
+        if not access_token:
+            return None
+
+        market_div = MA_MARKET_DIV.get(market_type, "J")
+        url = f"{self._url_base}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice"
+        headers = {
+            "authorization": f"Bearer {access_token}",
+            "appkey":        self._app_key,
+            "appsecret":     self._app_secret,
+            "tr_id":         TR_PERIOD_PRICE,
+            "custtype":      "P",
+        }
+
+        collected: dict[str, float] = {}  # 날짜문자열 -> 종가 (자동 중복 제거)
+        end_date = datetime.now(KST).date()
+        window_days = 90   # 호출 1번당 조회할 달력일 범위
+        max_calls = 9      # MA_MAX_PERIOD(480영업일 ≈ 달력일 670일 안팎)까지
+                            # 여유있게 커버(90일×9회=810일). 실측으로 max_calls=6일
+                            # 때 480일선 확보가 부족한 걸 시뮬레이션으로 확인해 늘림.
+
+        for call_idx in range(max_calls):
+            start_date = end_date - timedelta(days=window_days)
+            params = {
+                "FID_COND_MRKT_DIV_CODE": market_div,
+                "FID_INPUT_ISCD":         code,
+                "FID_INPUT_DATE_1":       start_date.strftime("%Y%m%d"),
+                "FID_INPUT_DATE_2":       end_date.strftime("%Y%m%d"),
+                "FID_PERIOD_DIV_CODE":    "D",
+                "FID_ORG_ADJ_PRC":        "1",  # 수정주가 반영
+            }
+            try:
+                async with self._session.get(url, headers=headers, params=params, ssl=False) as resp:
+                    body = await resp.json()
+                    rows = body.get("output2", [])
+                    log.debug(f"[MA] 기간별시세 응답 [{code}/{market_type}] "
+                              f"{start_date}~{end_date}: rt_cd={body.get('rt_cd')}, 행수={len(rows)}")
+                    if not rows:
+                        break  # 더 받을 데이터 없음(상장 전 구간 등) - 조기 종료
+                    for row in rows:
+                        d     = row.get("stck_bsop_date", "")
+                        close = row.get("stck_clpr", "")
+                        if d and close:
+                            try:
+                                collected[d] = float(close)
+                            except ValueError:
+                                continue
+            except Exception as e:
+                log.error(f"[MA] 기간별시세 조회 실패 [{code}/{market_type}] (호출 {call_idx+1}): {e}")
+                break
+
+            if len(collected) >= need_days:
+                break
+            end_date = start_date - timedelta(days=1)  # 다음 호출은 더 과거로
+            await asyncio.sleep(0.3)  # KIS 초당 호출 제한 방어
+
+        if not collected:
+            # v1.5.1: KIS REST(U 코드, 미검증)로 못 받았고 지수라면 pykrx로 폴백
+            if market_type == "index":
+                pykrx_code = PYKRX_INDEX_OHLCV_CODE.get(code)
+                if pykrx_code:
+                    log.info(f"[MA] KIS REST로 지수 히스토리를 못 받아 pykrx로 폴백 시도: {code} → pykrx코드 {pykrx_code}")
+                    fromdate = (datetime.now(KST) - timedelta(days=window_days * max_calls)).strftime("%Y%m%d")
+                    todate = datetime.now(KST).strftime("%Y%m%d")
+                    closes = await self.hass.async_add_executor_job(
+                        _sync_fetch_index_ohlcv_closes, pykrx_code, fromdate, todate
+                    )
+                    if closes:
+                        return closes[-need_days:] if len(closes) > need_days else closes
+
+                # v1.5.3: pykrx도 실패하면(KRX 차단 등, 수급 조회 때의 전례와 동일)
+                # 네이버 금융 일별시세 페이지로 마지막 폴백
+                log.info(f"[MA] pykrx로도 지수 히스토리를 못 받아 네이버 금융으로 폴백 시도: {code}")
+                closes = await self._fetch_index_history_naver(code, need_days)
+                if closes:
+                    return closes
+            return None
+        sorted_dates = sorted(collected.keys())
+        return [collected[d] for d in sorted_dates]
+
+    # ── 네이버 금융: 지수 일별시세 히스토리 조회 (MA 3차 폴백) ──── v1.5.3 신규
+    async def _fetch_index_history_naver(self, code: str, need_days: int) -> list[float] | None:
+        """네이버 금융 "코스피/코스닥 일별시세" 페이지를 여러 장 순회하며 지수
+        종가 히스토리를 모음(한 페이지 ≈ 10일치). KIS REST·pykrx 둘 다 실패했을
+        때의 최후 폴백 - 수급 조회에서 이미 실전 검증된 것과 같은 소스/패턴."""
+        market = INDEX_MARKET_MAP.get(code)  # "0001"→"KOSPI" / "1001"→"KOSDAQ"
+        if not market:
+            return None
+
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            ),
+        }
+        collected: dict[str, float] = {}
+        # [v1.5.4] 200일선 요청 시 150일에서 멈추는 문제 실측 확인 - 기존엔 "새 날짜가
+        # 0개 늘어난 페이지 1번"만 나와도 바로 중단했는데, 이게 일시적으로 겹치는
+        # 페이지 하나 때문에 전체가 조기 종료되는 원인으로 추정됨. 연속 3번
+        # "새 데이터 없음"이 나와야 진짜로 끝난 걸로 판단하도록 완화 + 상한도 넉넉하게.
+        max_pages = min(80, (need_days // 8) + 15)
+        no_progress_streak = 0
+        max_no_progress = 3
+
+        for page in range(1, max_pages + 1):
+            url = NAVER_INDEX_DAY_URL.format(code=market, page=page)
+            try:
+                async with self._session.get(url, headers=headers, ssl=False) as resp:
+                    if resp.status != 200:
+                        log.warning(f"[MA] 네이버 지수 일별시세 응답 실패 [{market}] page={page}: HTTP {resp.status}")
+                        break
+                    html = await resp.text()
+            except Exception as e:
+                log.warning(f"[MA] 네이버 지수 일별시세 요청 실패 [{market}] page={page}: {e}")
+                break
+
+            page_data = await self.hass.async_add_executor_job(_sync_parse_naver_index_day_html, html)
+            if not page_data:
+                no_progress_streak += 1
+                log.debug(f"[MA] 네이버 지수 일별시세 [{market}] page={page}: 파싱 결과 없음 "
+                          f"(연속 {no_progress_streak}/{max_no_progress})")
+                if no_progress_streak >= max_no_progress:
+                    break
+                await asyncio.sleep(0.3)
+                continue
+
+            before = len(collected)
+            collected.update(page_data)
+            gained = len(collected) - before
+            if gained == 0:
+                no_progress_streak += 1
+                log.debug(f"[MA] 네이버 지수 일별시세 [{market}] page={page}: 새 날짜 0개 "
+                          f"(연속 {no_progress_streak}/{max_no_progress}, 누적 {len(collected)}일)")
+                if no_progress_streak >= max_no_progress:
+                    break
+            else:
+                no_progress_streak = 0  # 진전이 있었으면 연속 카운트 초기화
+
+            if len(collected) >= need_days:
+                break
+            await asyncio.sleep(0.3)
+
+        if not collected:
+            log.error(f"[MA] 네이버 금융 지수 히스토리도 실패 - {code}({market}) MA 계산 불가")
+            return None
+        sorted_dates = sorted(collected.keys())
+        closes = [collected[d] for d in sorted_dates]
+        return closes[-need_days:] if len(closes) > need_days else closes
+
+    # ── 이동평균(MA) polling 루프 (독립 태스크) ──── v1.5.0 신규
+    async def _run_ma_poll(self):
+        """설정된 모든 MA 센서를 주기적으로 재계산. 일봉 기반이라 자주 갱신할
+        필요 없음(기본 30분). 같은 종목/지수에 여러 기간(10일/30일/200일 등)이
+        설정돼 있으면, 히스토리 조회는 한 번만 하고 그 안에서 여러 기간을
+        한꺼번에 계산함(같은 code에 대한 중복 API 호출 방지)."""
+        await asyncio.sleep(10)  # 시작 직후 세션/토큰 준비 대기
+
+        while True:
+            try:
+                if self._mas:
+                    # code+market_type 조합별로 필요한 최대 기간을 모아서
+                    # 히스토리 조회를 1회만 하고 여러 엔티티에 재사용
+                    grouped: dict[tuple, list] = {}
+                    for entity_name, cfg in self._mas.items():
+                        key = (cfg["code"], cfg["market_type"])
+                        grouped.setdefault(key, []).append((entity_name, cfg["period"]))
+
+                    for (code, market_type), items in grouped.items():
+                        max_period = max(p for _, p in items)
+                        closes = await self._fetch_period_closes(code, market_type, max_period)
+                        if not closes:
+                            log.warning(f"[MA] 히스토리 조회 실패 - {code}({market_type}) 계산 스킵")
+                            continue
+
+                        for entity_name, period in items:
+                            if len(closes) < period:
+                                log.warning(
+                                    f"[MA] {entity_name}: 확보된 데이터({len(closes)}일)가 "
+                                    f"요청 기간({period}일)보다 적어 계산 스킵"
+                                )
+                                continue
+                            ma_value = sum(closes[-period:]) / period
+                            result = {
+                                "price":       round(ma_value, 2),
+                                "period":      period,
+                                "base_code":   code,
+                                "market_type": market_type,
+                                "data_points": len(closes),
+                                "last_calc":   datetime.now(KST).isoformat(),
+                            }
+                            self._notify(entity_name, result)
+                            log.debug(f"[MA] {entity_name} = {ma_value:,.2f} "
+                                      f"({period}일선, 데이터 {len(closes)}개)")
+                        await asyncio.sleep(0.5)
+
+            except asyncio.CancelledError:
+                log.info("MA polling 태스크 종료")
+                break
+            except Exception as e:
+                log.error(f"MA polling 오류: {e}")
+
+            await asyncio.sleep(self._ma_poll)
 
     # ── 지수 polling 루프 (독립 태스크) ──────────
     async def _run_index_poll(self):

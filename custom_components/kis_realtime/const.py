@@ -16,6 +16,47 @@
 #   감싸는 오픈소스 pykrx 라이브러리를 씀. 종목코드 자리에 "KOSPI"/"KOSDAQ" 문자열을
 #   넣으면 시장 전체 합계가 나오는 걸 실제 함수 시그니처/docstring으로 확인했음.
 #   KIS 앱키와는 무관한 별도 인증 없는 공개 데이터 소스.
+# v1.5.0: 이동평균선(MA) 센서 추가
+#   [개요] 사용자가 원하는 기간(예: 10일, 30일, 200일 등 자유 입력)의 단순이동평균
+#   (SMA)을 별도 센서로 추가할 수 있게 됨. KIS든 Yahoo든 "이동평균을 계산해서 주는
+#   API"는 원래 없고(둘 다 원본 가격만 줌) 클라이언트가 직접 계산하는 게 표준이라,
+#   국내주식기간별시세(FHKST03010100, 종목/지수 공용) API로 일별 종가 히스토리를
+#   받아와 여기서 직접 평균을 계산함.
+#   ⚠ 지수(코스피/코스닥)는 같은 엔드포인트에 FID_COND_MRKT_DIV_CODE="U"를 쓰면
+#   조회된다고 여러 커뮤니티 자료에서 확인했으나, 공식 문서로 100% 검증은 못했음 -
+#   coordinator.py에서 원본 응답을 log.debug로 남기니 안 맞으면 그 로그로 확인 필요
+#   (기존 수급 API들과 동일한 검증 상태).
+CONF_MAS     = "moving_averages"  # MA 센서 목록 (code/market_type/period/entity/friendly_name)
+CONF_MA_POLL = "ma_poll_sec"      # MA 재계산 주기 (초)
+DEFAULT_MA_POLL = 1800  # 30분 - 일봉 기반이라 가격/수급만큼 자주 갱신할 필요 없음
+MIN_MA_POLL      = 300
+MAX_MA_POLL      = 7200
+
+TR_PERIOD_PRICE = "FHKST03010100"  # 국내주식기간별시세(일/주/월/년) - 종목/지수 공용
+MA_MARKET_DIV = {"stock": "J", "index": "U"}  # FID_COND_MRKT_DIV_CODE: 종목=J, 지수=U(미검증)
+MA_MIN_PERIOD = 2
+MA_MAX_PERIOD = 480  # 약 2년 영업일 - 그 이상은 페이지 호출이 너무 많아져 상한을 둠
+
+# v1.5.1: 지수 MA용 pykrx 폴백 - inquire-daily-itemchartprice의 공식 문서 상
+# FID_COND_MRKT_DIV_CODE는 "J"(주식/ETF/ETN)와 "W"(ELW)만 확인되고 "U"(지수)는
+# 검증 안 됨 → 이 엔드포인트가 지수를 아예 지원 안 할 가능성이 있어, KIS REST가
+# 실패하면 자동으로 pykrx(get_index_ohlcv)로 넘어가는 폴백을 둠(수급 조회와
+# 동일한 이중 안전망 패턴).
+# ⚠ pykrx의 get_index_ohlcv() 지수코드는 KIS 자체 코드(0001=코스피/1001=코스닥)와
+# 체계가 다름(커뮤니티 예제 기준 1001=코스피/2001=코스닥으로 확인) - 아래 매핑은
+# 그 커뮤니티 예제를 근거로 한 것이라 공식 문서 100% 검증은 아님.
+PYKRX_INDEX_OHLCV_CODE = {
+    "0001": "1001",  # KIS 0001(코스피) → pykrx get_index_ohlcv 코드 1001
+    "1001": "2001",  # KIS 1001(코스닥) → pykrx get_index_ohlcv 코드 2001
+}
+
+# v1.4.0: 위 v1.5.0~v1.5.4 개발/테스트 사이클(이동평균선 기능 신규 추가 + 지수 MA
+# 3단계 폴백 안정화)을 정식 릴리즈로 확정. 사용자 실제 HA 서버에서 종목·지수
+# MA(코스피 200일선 포함) 모두 정상 조회되는 것까지 확인 완료. 4자리대 개발
+# 버전 표기(1.5.x)를 3자리 정식 버전(1.4.0)으로 전환 - 기존 v1.3.2가 마지막
+# 정식 릴리즈였으므로, MA는 버그수정이 아닌 신규 기능이라 minor 버전을 올림
+# (1.3.2 → 1.4.0). 코드 변경 없음, 버전 번호 정리 + README 갱신만 포함.
+
 INDEX_MARKET_MAP = {
     "0001": "KOSPI",
     "1001": "KOSDAQ",
@@ -40,6 +81,13 @@ NAVER_SOSOK_MAP = {
     "1001": "02",   # KOSDAQ
 }
 NAVER_INVESTOR_URL = "https://finance.naver.com/sise/investorDealTrendDay.naver?bizdate={bizdate}&sosok={sosok}&page=1"
+
+# v1.5.3: 지수 MA용 3차 폴백(네이버 금융 일별시세 페이지) - KIS REST(U 코드,
+# 미검증) → pykrx(get_index_ohlcv) 둘 다 실패할 경우의 최후 경로. 수급 조회에서
+# pykrx가 KRX로부터 장시간 차단당했던 전례(18시간+, 100% 실패)가 있어 지수 MA도
+# 같은 이유로 막힐 가능성을 대비함. code는 INDEX_MARKET_MAP으로 이미 있는
+# "KOSPI"/"KOSDAQ" 문자열을 그대로 재사용 - 별도 매핑 불필요.
+NAVER_INDEX_DAY_URL = "https://finance.naver.com/sise/sise_index_day.naver?code={code}&page={page}"
 
 DOMAIN = "kis_realtime"
 

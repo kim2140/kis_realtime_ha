@@ -34,6 +34,11 @@
 #     individual_buy → investor_individual_buy 로 리네임. investor_ 접두사가 붙은 건 전부
 #     투자자매매동향(inquire-investor) API에서 온 값이라는 걸 이름만 보고 알 수 있게 함.
 #     (참고: 전부 "수량" 기준이며 금액이 아님)
+# [v1.5.0] 이동평균선(MA) Sensor 신규 (KisMovingAverageSensor)
+#   coordinator.py의 _run_ma_poll()이 계산한 SMA 값을 노출. 기존 종목/지수 Sensor와
+#   같은 register_callback 패턴을 그대로 재사용 - entity_id는 sensor.kis_{code}_ma{기간}
+#   형태(예: sensor.kis_069500_ma20).
+# [v1.4.0] 정식 릴리즈 확정 (버전 번호 정리만, 코드 변경 없음)
 # ─────────────────────────────────────────────────────────────────────────────
 
 from __future__ import annotations
@@ -45,7 +50,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN, CONF_STOCKS, CONF_INDEXES
+from .const import DOMAIN, CONF_STOCKS, CONF_INDEXES, CONF_MAS
 from .coordinator import KisRealtimeCoordinator
 
 log = logging.getLogger(__name__)
@@ -85,8 +90,25 @@ async def async_setup_entry(
             )
         )
 
+    # v1.5.0: 이동평균선(MA) 센서
+    for ma in cfg.get(CONF_MAS, []):
+        entities.append(
+            KisMovingAverageSensor(
+                coordinator,
+                ma["code"],
+                ma["market_type"],
+                ma["period"],
+                ma["entity"],
+                ma.get("friendly_name", ""),
+            )
+        )
+
     if entities:
-        log.info(f"sensor 생성: {len(entities)}개 (종목 {len(cfg.get(CONF_STOCKS,[]))}개 / 지수 {len(cfg.get(CONF_INDEXES,[]))}개)")
+        log.info(
+            f"sensor 생성: {len(entities)}개 "
+            f"(종목 {len(cfg.get(CONF_STOCKS,[]))}개 / 지수 {len(cfg.get(CONF_INDEXES,[]))}개 / "
+            f"MA {len(cfg.get(CONF_MAS,[]))}개)"
+        )
     else:
         log.warning("생성할 sensor가 없습니다. 종목/지수를 먼저 추가해주세요.")
 
@@ -274,4 +296,74 @@ class KisIndexSensor(SensorEntity):
             "investor_individual_buy":  self._data.get("investor_individual_buy", 0),
             "investor_date":            self._data.get("investor_date", ""),
             "last_updated": datetime.now().isoformat(),
+        }
+
+
+class KisMovingAverageSensor(SensorEntity):
+    """[v1.5.0 신규] 이동평균선(MA) Sensor - 종목/지수의 실시간 가격과는 별개로,
+    사용자가 지정한 기간(예: 10일/30일/200일)의 단순이동평균(SMA)을 노출.
+    값은 coordinator._run_ma_poll()이 국내주식기간별시세 API로 받은 일별 종가
+    히스토리를 바탕으로 직접 계산해서 채워줌 - KIS/Yahoo 둘 다 이동평균 자체를
+    제공하는 API는 없어서(원본 가격만 줌), 계산은 항상 클라이언트(이 통합) 몫."""
+
+    _attr_state_class     = SensorStateClass.MEASUREMENT
+    _attr_icon            = "mdi:chart-bell-curve-cumulative"
+    _attr_should_poll     = False
+    _attr_has_entity_name = False
+
+    def __init__(
+        self,
+        coordinator: KisRealtimeCoordinator,
+        code: str,
+        market_type: str,
+        period: int,
+        entity_name: str,
+        friendly_name: str = "",
+    ):
+        self._coordinator = coordinator
+        self._code        = code
+        self._market_type = market_type
+        self._period      = period
+        self._entity_name = entity_name
+        self._data: dict  = {}
+
+        self._attr_unique_id           = f"kis_{entity_name}"
+        self._attr_suggested_object_id = f"kis_{entity_name}"
+        self.entity_id                 = f"sensor.kis_{entity_name}"
+        self._attr_name = friendly_name if friendly_name else f"[KIS] {code} {period}일선"
+        # 종목은 원화(KRW), 지수는 포인트(pt) - 기존 KisStockSensor/KisIndexSensor와 단위를 맞춤
+        self._attr_native_unit_of_measurement = "KRW" if market_type == "stock" else "pt"
+
+    async def async_added_to_hass(self):
+        """HA에 등록될 때 coordinator 콜백 연결"""
+        self._coordinator.register_callback(self._entity_name, self._on_data)
+        if self._entity_name in self._coordinator.data:
+            self._data = self._coordinator.data[self._entity_name]
+
+    async def async_will_remove_from_hass(self):
+        """HA에서 제거될 때 콜백 해제"""
+        self._coordinator.unregister_callback(self._entity_name, self._on_data)
+
+    @callback
+    def _on_data(self, data: dict):
+        """Coordinator에서 데이터 수신 시 HA 상태 갱신"""
+        self._data = data
+        self.async_write_ha_state()
+
+    @property
+    def native_value(self):
+        return self._data.get("price")
+
+    @property
+    def extra_state_attributes(self):
+        if not self._data:
+            return {}
+        return {
+            "base_code":   self._data.get("base_code", self._code),
+            "market_type": self._data.get("market_type", self._market_type),
+            "period":      self._data.get("period", self._period),
+            # 실제로 평균에 쓰인 일수 - period보다 적으면 아직 데이터가 부족해서
+            # 계산이 스킵됐다는 뜻(coordinator 로그에 경고가 남음)
+            "data_points": self._data.get("data_points", 0),
+            "last_calc":   self._data.get("last_calc", ""),
         }
